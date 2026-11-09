@@ -10,7 +10,7 @@ group = "Platforms"
 On macOS and FreeBSD, a rawether socket is a **BPF device** (`/dev/bpf` or `/dev/bpf0`, `/dev/bpf1`, …) attached to one interface. BPF is the facility `tcpdump` and Wireshark use. It reads and writes whole Ethernet frames and runs classic-BPF filters in the kernel, so the same `bpf::Program` works on both systems and on Linux.
 
 > [!NOTE]
-> CI runs the unit tests on macOS (including opening a BPF device) and on FreeBSD 14 in a VM.
+> CI sends and receives real frames through BPF on macOS 15 and macOS 26 (a `feth` pair) and on FreeBSD 14 (an `epair`): filtering, timestamps, own-frame suppression, counters, truncation and timeouts. On macOS the suite runs as an ordinary user with access to `/dev/bpf*`.
 
 ## Access
 

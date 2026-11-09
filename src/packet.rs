@@ -161,15 +161,65 @@ pub struct Stats {
 pub struct TxErrors {
     /// The launch time had passed, or would have by the time the frame reached the qdisc.
     pub missed: u64,
-    /// The qdisc refused the frame's launch-time parameters, for example a clock other than
-    /// its own.
+    /// The qdisc refused the frame's launch-time parameters, for example a launch time already
+    /// past or on another clock.
     pub invalid: u64,
+    /// Transmit timestamps rawether dropped because more were waiting unread than it keeps
+    /// (1 024 per socket).
+    pub timestamps_lost: u64,
 }
 
 impl TxErrors {
-    /// All dropped frames.
-    pub fn total(&self) -> u64 {
+    /// Launch-time frames dropped, for either reason.
+    pub fn dropped(&self) -> u64 {
         self.missed + self.invalid
+    }
+}
+
+/// When a sent frame left, by its identifier ([`Socket::next_tx_id`](crate::Socket::next_tx_id)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TxTimestamp {
+    /// The identifier the socket gave the frame.
+    pub id: u32,
+    /// When it left: the NIC's clock ([`TimestampSource::Hardware`]) or the kernel's as the
+    /// frame reached the driver ([`TimestampSource::Software`]).
+    pub timestamp: Timestamp,
+}
+
+/// What an interface can timestamp, and which PTP hardware clock stamps it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[allow(clippy::struct_excessive_bools)] // four independent capabilities, as ethtool reports them
+pub struct TimestampInfo {
+    /// The kernel stamps received frames.
+    pub software_rx: bool,
+    /// The kernel stamps transmitted frames.
+    pub software_tx: bool,
+    /// The NIC stamps received frames on its own clock.
+    pub hardware_rx: bool,
+    /// The NIC stamps transmitted frames on its own clock.
+    pub hardware_tx: bool,
+    /// The PTP hardware clock (`/dev/ptp<index>`) the NIC's stamps come from, if it has one.
+    pub phc_index: Option<u32>,
+}
+
+impl TimestampInfo {
+    /// The PTP hardware clock's device path, `/dev/ptp<index>`.
+    pub fn phc_path(&self) -> Option<std::path::PathBuf> {
+        self.phc_index.map(|i| std::path::PathBuf::from(format!("/dev/ptp{i}")))
+    }
+
+    /// From `struct ethtool_ts_info`'s `so_timestamping` bits and `phc_index` (−1: none).
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+    pub(crate) fn from_ethtool(so_timestamping: u32, phc_index: i32) -> TimestampInfo {
+        // `SOF_TIMESTAMPING_{TX,RX}_{HARDWARE,SOFTWARE}` and `RAW_HARDWARE`.
+        let has = |bit: u32| so_timestamping & (1 << bit) != 0;
+        TimestampInfo {
+            software_rx: has(3),
+            software_tx: has(1),
+            hardware_rx: has(2) && has(6),
+            hardware_tx: has(0) && has(6),
+            phc_index: u32::try_from(phc_index).ok(),
+        }
     }
 }
 
@@ -201,6 +251,21 @@ mod tests {
         for bad in ["", "01:02:03:04:05", "01:02:03:04:05:06:07", "001:02:03:04:05:06", "zz:02:03:04:05:06"] {
             assert!(bad.parse::<MacAddr>().is_err(), "{bad}");
         }
+    }
+
+    /// Spec 007: capability bits and the PHC index are read as ethtool reports them.
+    #[test]
+    fn timestamp_capabilities_follow_the_ethtool_bits() {
+        // veth: SOFTWARE | RX_SOFTWARE | TX_SOFTWARE, no PHC.
+        let veth = TimestampInfo::from_ethtool(0b1_1010, -1);
+        assert_eq!(veth, TimestampInfo { software_rx: true, software_tx: true, ..TimestampInfo::default() });
+        assert_eq!(veth.phc_path(), None);
+        // A PTP NIC: all of them plus RAW_HARDWARE, PHC 2.
+        let nic = TimestampInfo::from_ethtool(0b101_1111, 2);
+        assert!(nic.hardware_rx && nic.hardware_tx && nic.software_rx && nic.software_tx);
+        assert_eq!(nic.phc_path(), Some(std::path::PathBuf::from("/dev/ptp2")));
+        // Hardware bits without RAW_HARDWARE do not count as hardware stamps.
+        assert!(!TimestampInfo::from_ethtool(0b0101, 0).hardware_rx);
     }
 
     #[test]

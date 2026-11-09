@@ -34,6 +34,8 @@ A `Packet` borrows the socket until the next receive. Copy what you need to keep
 `p.frame()` returns the frame's Ethernet header as named fields, or `None` when fewer octets were captured than the header announces:
 
 ```rust
+use rawether::EtherType;
+
 if let Some(f) = p.frame() {
     let src = f.source();          // MacAddr
     let dst = f.destination();
@@ -41,8 +43,8 @@ if let Some(f) = p.frame() {
         println!("vlan {} pcp {} dei {}", tag.vid(), tag.pcp(), tag.dei());
     }
     match f.ethertype() {
-        0x88f7 => handle_ptp(f.payload()),
-        other => eprintln!("{src} → {dst}: type {other:04x}"),
+        EtherType::PTP => handle_ptp(f.payload()),
+        other => eprintln!("{src} → {dst}: {other}"), // e.g. "LLDP (0x88cc)"
     }
 }
 ```
@@ -51,7 +53,7 @@ if let Some(f) = p.frame() {
 
 - **Tags.** The view steps over up to two 802.1Q (0x8100) or 802.1ad (0x88A8) tags. Those are exactly the tags the [EtherType filter](@/docs/filtering.md) steps over, so a frame the filter let through for type `x` has `ethertype() == x`.
 - **Payload.** It is everything after the EtherType, *including padding*: Ethernet does not say where your protocol's data ends, so short frames carry zeros up to 60 octets. For a truncated packet, it is only the captured part; check `p.is_truncated()`.
-- **802.3 lengths.** A value below 0x0600 in the EtherType position is a length (802.3/LLC framing). It is reported unchanged.
+- **802.3 lengths.** A value below 0x0600 in the EtherType position is a length (802.3/LLC framing). It is reported unchanged; `f.ethertype().is_length()` says so.
 
 ## Receive paths
 
@@ -78,7 +80,7 @@ let c = Config::new("eth0").rx_mode(RxMode::Ring(RingConfig { block_count: 256, 
 
 With `Auto`, a ring the kernel refuses (for example under a memory limit) becomes the plain path; check `rx_path()` if it matters to you. An explicit `RxMode::Ring` the kernel refuses fails `open` with the reason instead. A geometry that cannot work, or whose size overflows, is refused before any system call.
 
-At low frame rates the ring adds up to `retire_ms` (1 ms by default) before a lone frame is handed over. If your budget is tighter than that, use `RxMode::Plain`, or lower `retire_ms`.
+At low frame rates the ring adds up to `retire_ms` (1 ms by default, also the minimum) before a lone frame is handed over. If your budget is tighter than that, use `RxMode::Plain`: about 15 µs instead of about 550 µs at the median ([Performance](@/docs/performance.md)).
 
 ## Sizing the ring
 

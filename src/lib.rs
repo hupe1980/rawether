@@ -22,10 +22,11 @@
 //!
 //! # fn main() -> std::io::Result<()> {
 //! // LLDP and PTP frames, VLAN-tagged or not, with timestamps.
-//! let mut sock = rawether::Config::new("eth0").ethertypes(&[0x88cc, 0x88f7]).open()?;
+//! use rawether::EtherType;
+//! let mut sock = rawether::Config::new("eth0").ethertypes([EtherType::LLDP, EtherType::PTP]).open()?;
 //! while let Some(p) = sock.recv(Some(Duration::from_secs(1)))? {
 //!     let Some(f) = p.frame() else { continue }; // shorter than a header: skip, never panic
-//!     println!("{} sent type {:04x} at {:?}", f.source(), f.ethertype(), p.timestamp());
+//!     println!("{} sent {} at {:?}", f.source(), f.ethertype(), p.timestamp());
 //! }
 //! # Ok(()) }
 //! ```
@@ -76,6 +77,7 @@ pub mod bpf;
 #[cfg(any(target_os = "macos", target_os = "freebsd", test, fuzzing))]
 mod bpf_record;
 mod config;
+mod ethertype;
 pub mod frame;
 #[cfg(any(target_os = "linux", test))]
 mod hwtstamp;
@@ -91,8 +93,11 @@ use std::io;
 use std::time::Duration;
 
 pub use config::{Clock, Config, Filter, RingConfig, RxMode, Timestamping, TxTime};
+pub use ethertype::EtherType;
 pub use frame::{Frame, FrameBuilder, TagKind, VlanTag};
-pub use packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
+pub use packet::{
+    MacAddr, Packet, RxPath, Stats, Timestamp, TimestampInfo, TimestampSource, TxErrors, TxTimestamp,
+};
 
 /// An open raw socket on one interface.
 #[derive(Debug)]
@@ -186,6 +191,49 @@ impl Socket {
         self.inner.tx_errors()
     }
 
+    /// The transmit timestamps this socket delivers: [`Timestamping::Off`] unless
+    /// [`Config::tx_timestamping`] asked for them; a request for hardware stamps that the NIC
+    /// cannot honour delivers [`Timestamping::Software`].
+    pub fn tx_timestamping(&self) -> Timestamping {
+        self.inner.tx_timestamping()
+    }
+
+    /// The identifier the next frame sent gets; a batch gets consecutive ones (wrapping). On
+    /// Linux 6.13 and later identifiers are exact; before, the kernel numbers frames itself and
+    /// a send it refuses after numbering (a qdisc drop) shifts later identifiers by one.
+    pub fn next_tx_id(&self) -> u32 {
+        self.inner.next_tx_id()
+    }
+
+    /// The next transmit timestamp, waiting for at most `timeout` (`None`: indefinitely; at once
+    /// on a non-blocking socket). Timestamps may arrive out of order; match them by
+    /// [`TxTimestamp::id`]. Fails with `InvalidInput` unless [`Config::tx_timestamping`] is on.
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use rawether::{Config, Timestamping};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// # let frame = [0u8; 60];
+    /// let mut sock = Config::new("eth0").tx_timestamping(Timestamping::Hardware).open()?;
+    /// let id = sock.next_tx_id();
+    /// sock.send(&frame)?;
+    /// if let Some(t) = sock.tx_timestamp(Some(Duration::from_millis(10)))? {
+    ///     assert_eq!(t.id, id);
+    ///     println!("left at {:?} ({:?})", t.timestamp.as_nanos(), t.timestamp.source);
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn tx_timestamp(&mut self, timeout: Option<Duration>) -> io::Result<Option<TxTimestamp>> {
+        self.inner.tx_timestamp(timeout)
+    }
+
+    /// What this socket's interface can timestamp, and its PTP hardware clock: see
+    /// [`timestamp_info`].
+    pub fn timestamp_info(&self) -> io::Result<TimestampInfo> {
+        timestamp_info(self.interface())
+    }
+
     /// The timestamps this socket delivers. [`Timestamping::Hardware`] when the NIC stamps
     /// received frames; a request for hardware timestamps that the NIC cannot honour delivers
     /// [`Timestamping::Software`]. Each frame's [`Timestamp::source`] says which clock stamped
@@ -229,7 +277,7 @@ impl std::os::fd::AsRawFd for Socket {
 ///
 /// ```no_run
 /// fn main() -> std::io::Result<()> {
-///     let sock = rawether::Config::new("eth0").ethertypes(&[0x88f7]).open()?;
+///     let sock = rawether::Config::new("eth0").ethertypes([rawether::EtherType::PTP]).open()?;
 ///     rawether::drop_capabilities()?; // still the only thread
 ///     // ...then build the runtime (or spawn threads) and move `sock` into it.
 ///     # drop(sock);
@@ -242,6 +290,22 @@ impl std::os::fd::AsRawFd for Socket {
 /// that separately.
 pub fn drop_capabilities() -> io::Result<()> {
     sys::drop_capabilities()
+}
+
+/// What `interface` can timestamp, and which PTP hardware clock (`/dev/ptp<index>`) its
+/// hardware stamps come from. Needs no privilege. On macOS and FreeBSD, BPF stamps received
+/// frames in software and there is no hardware clock.
+///
+/// ```no_run
+/// # fn main() -> std::io::Result<()> {
+/// let info = rawether::timestamp_info("eth0")?;
+/// if let Some(phc) = info.phc_path() {
+///     println!("hardware stamps on {}", phc.display());
+/// }
+/// # Ok(()) }
+/// ```
+pub fn timestamp_info(interface: &str) -> io::Result<TimestampInfo> {
+    sys::timestamp_info(interface)
 }
 
 /// Read `clock` — for computing launch times.

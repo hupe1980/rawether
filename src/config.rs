@@ -2,6 +2,7 @@
 
 use std::io;
 
+use crate::EtherType;
 use crate::Socket;
 use crate::bpf::Program;
 use crate::packet::MacAddr;
@@ -14,7 +15,7 @@ pub enum Filter {
     All,
     /// Frames whose EtherType is in the set — untagged, or behind one or two 802.1Q/802.1ad
     /// tags. Compiled with [`Program::ethertypes`].
-    EtherTypes(Vec<u16>),
+    EtherTypes(Vec<EtherType>),
     /// A classic-BPF program of the caller's.
     Bpf(Program),
 }
@@ -121,6 +122,7 @@ pub struct Config {
     pub(crate) promiscuous: bool,
     pub(crate) rx: RxMode,
     pub(crate) timestamping: Timestamping,
+    pub(crate) tx_timestamping: Timestamping,
     pub(crate) priority: Option<u32>,
     pub(crate) tx_time: Option<TxTime>,
     pub(crate) qdisc_bypass: bool,
@@ -141,6 +143,7 @@ impl Config {
             promiscuous: false,
             rx: RxMode::Auto,
             timestamping: Timestamping::Software,
+            tx_timestamping: Timestamping::Off,
             priority: None,
             tx_time: None,
             qdisc_bypass: false,
@@ -151,10 +154,11 @@ impl Config {
         }
     }
 
-    /// Receive only frames of these EtherTypes, tagged or not.
+    /// Receive only frames of these EtherTypes, tagged or not: names, numbers or a mix
+    /// (`[EtherType::LLDP, EtherType::PTP]`, `&[0x88b5u16]`).
     #[must_use]
-    pub fn ethertypes(mut self, types: &[u16]) -> Config {
-        self.filter = Filter::EtherTypes(types.to_vec());
+    pub fn ethertypes<T: Into<EtherType>>(mut self, types: impl IntoIterator<Item = T>) -> Config {
+        self.filter = Filter::EtherTypes(types.into_iter().map(Into::into).collect());
         self
     }
 
@@ -199,6 +203,16 @@ impl Config {
     #[must_use]
     pub fn timestamping(mut self, t: Timestamping) -> Config {
         self.timestamping = t;
+        self
+    }
+
+    /// Transmit timestamps (Linux; off by default): every frame sent gets an identifier
+    /// ([`Socket::next_tx_id`]), and [`Socket::tx_timestamp`] hands back when it left.
+    /// [`Timestamping::Hardware`] uses the NIC's clock where it stamps transmitted frames, under
+    /// the same never-lower rule as receive stamps; otherwise the kernel's.
+    #[must_use]
+    pub fn tx_timestamping(mut self, t: Timestamping) -> Config {
+        self.tx_timestamping = t;
         self
     }
 
@@ -267,7 +281,7 @@ impl Config {
     pub(crate) fn program(&self) -> io::Result<Option<Program>> {
         match &self.filter {
             Filter::All => Ok(None),
-            Filter::EtherTypes(types) => Program::ethertypes(types).map(Some),
+            Filter::EtherTypes(types) => Program::ethertypes(types.iter()).map(Some),
             Filter::Bpf(p) => Ok(Some(p.clone())),
         }
     }
@@ -321,8 +335,13 @@ mod tests {
         assert!(Config::new("eth0").rx_mode(RxMode::Ring(huge)).validate().is_err());
         let none = RingConfig { block_count: 0, ..RingConfig::default() };
         assert!(Config::new("eth0").rx_mode(RxMode::Ring(none)).validate().is_err());
-        assert!(Config::new("eth0").ethertypes(&[]).program().is_err());
-        assert!(Config::new("eth0").ethertypes(&[0x88cc]).program().expect("program").is_some());
+        assert!(Config::new("eth0").ethertypes::<EtherType>([]).program().is_err());
+        assert!(Config::new("eth0").ethertypes([EtherType::LLDP]).program().expect("program").is_some());
+        // Spec 015 SC-002: names, numbers and slices give the same program.
+        let named =
+            Config::new("eth0").ethertypes([EtherType::LLDP, EtherType::PTP]).program().expect("named");
+        let numbered = Config::new("eth0").ethertypes([0x88ccu16, 0x88f7]).program().expect("numbered");
+        assert_eq!(named, numbered);
     }
 
     #[test]

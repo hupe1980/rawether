@@ -1,0 +1,488 @@
+otmVersion: 0.2.0
+project:
+  id: 007-ptp-precision
+  name: PTP precision — transmit timestamps and clock discovery
+threatspec:
+  actors:
+  - id: actor.caller
+    name: The application using rawether
+    trust: trusted
+  - id: actor.host-program
+    name: Another program on the host sharing the NIC (ptp4l)
+    trust: trusted
+  - id: actor.kernel
+    name: The kernel, writing error-queue reports and control messages
+    trust: privileged
+  - id: actor.segment-peer
+    name: Any device able to put frames on the link or take it down
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: credential-theft
+  - disposition: no-threat-detected
+    reason: 'checked the timestamp path: identifiers come from rawether''s own counter or the kernel, never from
+      the network'
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: no audit-relevant surface
+    technique: missing-audit-trail
+  - disposition: not-applicable
+    reason: 'no shared-tenant surface: one socket, one process'
+    technique: cross-tenant-leak
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  - disposition: no-threat-detected
+    reason: 'checked capability discovery: ETHTOOL_GET_TS_INFO is unprivileged by design and returns public metadata;
+      NIC writes keep needing CAP_NET_ADMIN'
+    technique: broken-access-control
+  - disposition: no-threat-detected
+    reason: 'checked the error queue: OPT_TSONLY returns no frame payload, so no frame data is looped back into
+      the process'
+    technique: sensitive-data-exposure
+  exclusions:
+  - entity: Timestamping capabilities
+    reason: public interface metadata (ethtool reports it to any user); modelled as component.ts-info, no asset
+  - entity: Frame identifier
+    reason: part of asset.tx-time-integrity
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T13:55:18Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 006174092a3246b2a0e774a01f553c9830ced19466c38c36389c4a6d47c4a318
+  - path: spec.md
+    sha256: 7fa5ae636964a0d16469af3796c70766cd560b707646be13c710e4cc144929e0
+  surfaces:
+  - external-input
+  - network-boundary
+  version: '0.1'
+trustZones:
+- id: tz.host
+  name: Host-wide NIC state shared with other programs
+  risk:
+    trustRating: 7
+- id: tz.kernel
+  name: The kernel
+  risk:
+    trustRating: 9
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.host-time-sync
+  name: The NIC's timestamping configuration other programs (ptp4l) rely on
+  risk:
+    availability: 85
+    confidentiality: 0
+    integrity: 85
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-3
+    classification: internal
+- id: asset.process-memory
+  name: Memory safety of the caller's process
+  risk:
+    availability: 80
+    confidentiality: 80
+    integrity: 95
+  attributes:
+    type: business-data
+    source: THREAT_MODEL.md#Assets
+    classification: internal
+- id: asset.receive-availability
+  name: The caller's receive loop and memory
+  risk:
+    availability: 85
+    confidentiality: 0
+    integrity: 30
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-4
+    classification: internal
+- id: asset.tx-accounting
+  name: Launch-time drop counts and lost-timestamp counts
+  risk:
+    availability: 20
+    confidentiality: 0
+    integrity: 70
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-4
+    classification: internal
+- id: asset.tx-time-integrity
+  name: The pairing of each transmit timestamp with the frame it belongs to
+  risk:
+    availability: 40
+    confidentiality: 0
+    integrity: 95
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-1
+    classification: internal
+components:
+- id: component.bsd-backend
+  name: BPF backend
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-010
+- id: component.error-queue
+  name: 'Error-queue reader: timestamps and launch-time reports'
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-008
+- id: component.hwtstamp-config
+  name: Hardware timestamp configuration decision
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-005
+- id: component.nic
+  name: The NIC's device-wide timestamp configuration
+  type: datastore
+  parent:
+    trustZone: tz.host
+  attributes:
+    source: spec.md#User-Story-3
+- id: component.ts-info
+  name: Timestamping capability and PHC discovery (ETHTOOL_GET_TS_INFO)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-007
+- id: component.tx-stamping
+  name: Transmit timestamp ids and sends (SCM_TS_OPT_ID / OPT_ID)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-002
+dataflows:
+- id: flow.error-queue
+  name: The kernel queues transmit timestamps and launch-time reports
+  source: actor.kernel
+  destination: component.error-queue
+  assets:
+  - asset.tx-time-integrity
+  - asset.tx-accounting
+  - asset.process-memory
+  attributes:
+    crosses:
+    - tz.kernel
+    - tz.process
+- id: flow.hwtstamp-write
+  name: rawether raises the NIC's transmit mode
+  source: component.hwtstamp-config
+  destination: component.nic
+  assets:
+  - asset.host-time-sync
+  attributes:
+    crosses:
+    - tz.process
+    - tz.host
+threats:
+- id: threat.error-queue-starves-receive
+  name: Unread transmit timestamps keep the socket's error flag raised, so a receive spins a core, or an unbounded
+    buffer of them grows without limit
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-835
+  - CWE-770
+  risk:
+    impact: 70
+    likelihood: 60
+  attributes:
+    source: spec.md#User-Story-4
+    assets:
+    - asset.receive-availability
+    status: open
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.error-queue
+    - flow.error-queue
+    profile: stride
+    severity: high
+    technique: resource-exhaustion
+- id: threat.nic-tx-config-lowered
+  name: Requesting hardware transmit stamps changes the NIC's transmit mode under ptp4l (turning it off or out of
+    a one-step mode), breaking the host's time synchronisation
+  categories:
+  - Tampering
+  - Denial of Service
+  cwes:
+  - CWE-664
+  risk:
+    impact: 80
+    likelihood: 50
+  attributes:
+    source: spec.md#User-Story-3
+    assets:
+    - asset.host-time-sync
+    status: open
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.hwtstamp-config
+    - component.nic
+    - flow.hwtstamp-write
+    profile: stride
+    severity: high
+    technique: data-tampering-in-transit
+- id: threat.timestamp-cmsg-overread
+  name: An error-queue report whose control messages are shorter than the timestamp or error structure read from
+    them makes rawether read past the message
+  categories:
+  - Tampering
+  cwes:
+  - CWE-125
+  risk:
+    impact: 90
+    likelihood: 10
+  attributes:
+    source: spec.md#FR-008
+    assets:
+    - asset.process-memory
+    status: open
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.error-queue
+    - flow.error-queue
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.tx-reports-lost
+  name: Reading transmit timestamps discards launch-time drop reports, or counting drops discards timestamps, so
+    the caller loses one of them silently
+  categories:
+  - Repudiation
+  cwes:
+  - CWE-684
+  risk:
+    impact: 50
+    likelihood: 50
+  attributes:
+    source: spec.md#User-Story-4
+    assets:
+    - asset.tx-accounting
+    - asset.tx-time-integrity
+    status: open
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.error-queue
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.tx-timestamp-misattributed
+  name: A send the kernel refuses after numbering it shifts the kernel's counter, so rawether hands the caller a
+    transmit time belonging to a different frame and a PTP clock computes a wrong offset
+  categories:
+  - Tampering
+  cwes:
+  - CWE-682
+  - CWE-670
+  risk:
+    impact: 90
+    likelihood: 50
+  attributes:
+    source: spec.md#User-Story-1
+    assets:
+    - asset.tx-time-integrity
+    status: open
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.tx-stamping
+    - flow.error-queue
+    profile: stride
+    severity: high
+    technique: data-tampering-in-transit
+- id: threat.unsupported-silently-ignored
+  name: On macOS or FreeBSD a request for transmit timestamps is ignored, and a caller waiting for them blocks or
+    gets none without knowing why
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-636
+  risk:
+    impact: 40
+    likelihood: 40
+  attributes:
+    source: spec.md#FR-010
+    assets:
+    - asset.tx-time-integrity
+    status: open
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.bsd-backend
+    profile: stride
+    severity: medium
+    technique: resource-exhaustion
+mitigations:
+- id: mitigation.bounded-report-queue
+  name: Drain the error queue into a preallocated, bounded queue on every POLLERR; drop the oldest and count
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.error-queue-starves-receive
+    status: required
+    kind: preventive
+    requirements:
+    - SR-003
+    touchpoints:
+    - src/sys/linux.rs
+- id: mitigation.checked-report-cmsgs
+  name: Read scm_timestamping and sock_extended_err only through the length-checked cmsg reader; ignore truncated
+    buffers
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.timestamp-cmsg-overread
+    status: required
+    kind: preventive
+    requirements:
+    - SR-005
+    touchpoints:
+    - src/sys/linux.rs
+- id: mitigation.explicit-ids
+  name: Assign each frame's id in user space and pass it with SCM_TS_OPT_ID (Linux 6.13+), detected by the kernel
+    accepting it; announce ids before the send
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.tx-timestamp-misattributed
+    status: required
+    kind: preventive
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/sys/linux.rs
+    - tests/veth.rs
+- id: mitigation.one-dispatcher
+  name: 'One error-queue reader classifies every report: timestamps to the queue, launch-time reports to the counts'
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.tx-reports-lost
+    status: required
+    kind: preventive
+    requirements:
+    - SR-004
+    touchpoints:
+    - src/sys/linux.rs
+- id: mitigation.tx-read-first-never-lower
+  name: Raise tx_type only from OFF to ON, after a successful read; never touch one-step modes
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.nic-tx-config-lowered
+    status: required
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/hwtstamp.rs
+    - src/sys/linux.rs
+- id: mitigation.unsupported-is-an-error
+  name: open fails with Unsupported when transmit timestamps are requested on BPF
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.unsupported-silently-ignored
+    status: required
+    kind: preventive
+    requirements:
+    - SR-006
+    touchpoints:
+    - src/sys/bsd.rs
+requirements:
+- id: SR-001
+  statement: Every transmit timestamp MUST carry the identifier the socket announced for its frame, also after a
+    send the kernel refused (Linux 6.13 and later).
+  priority: P1
+  mitigations:
+  - mitigation.explicit-ids
+  acceptance:
+  - given: 1 000 frames sent in single and batched sends with software transmit timestamps on veth
+    then: their identifiers are exactly the announced ones
+    when: the timestamps are read
+  - given: a send refused by an etf qdisc (past launch time)
+    then: their timestamps carry the identifiers announced for them
+    when: 10 more frames are sent
+  tasks: []
+- id: SR-002
+  statement: Requesting hardware transmit timestamps MUST NOT change a NIC whose configuration could not be read,
+    MUST raise tx_type only from OFF to ON, and MUST leave every other tx_type and the receive filter rule of 0.1.0
+    unchanged.
+  priority: P1
+  mitigations:
+  - mitigation.tx-read-first-never-lower
+  acceptance:
+  - given: every tx_type 0..=3, rx_filter 0..=15, and receive/transmit requests
+    then: a write raises tx_type only from OFF to ON, rx_filter only from NONE to ALL, and changes nothing else
+    when: the decision runs
+  tasks: []
+- id: SR-003
+  statement: Unread transmit timestamps MUST NOT make a receive spin, and rawether MUST keep at most a fixed number
+    of them, counting the ones it drops.
+  priority: P1
+  mitigations:
+  - mitigation.bounded-report-queue
+  acceptance:
+  - given: a socket with transmit timestamps and 2 000 frames sent without reading their timestamps
+    then: it returns after about 200 ms using little CPU, 1 024 timestamps can be read, and the lost count is the
+      rest
+    when: recv waits 200 ms with nothing to receive
+  tasks: []
+- id: SR-004
+  statement: Reading transmit timestamps MUST NOT discard launch-time reports, and reading launch-time reports MUST
+    NOT discard timestamps.
+  priority: P2
+  mitigations:
+  - mitigation.one-dispatcher
+  acceptance:
+  - given: a socket with launch times and transmit timestamps through etf, one refused launch time and frames that
+      left
+    then: invalid = 1 and every sent frame's timestamp is there
+    when: tx_errors and the timestamps are read in either order
+  tasks: []
+- id: SR-005
+  statement: Error-queue control messages MUST be read only through the length-checked reader and ignored when the
+    control buffer was truncated.
+  priority: P2
+  mitigations:
+  - mitigation.checked-report-cmsgs
+  acceptance:
+  - given: the error-queue reader
+    then: every payload is read with cmsg_payload and MSG_CTRUNC skips the message (unit test of the classifier
+      over hand-built reports)
+    when: it is reviewed
+  tasks: []
+- id: SR-006
+  statement: Requesting transmit timestamps on a platform without them MUST make open fail with Unsupported.
+  priority: P2
+  mitigations:
+  - mitigation.unsupported-is-an-error
+  acceptance:
+  - given: macOS or FreeBSD
+    then: Unsupported, naming transmit timestamps
+    when: a socket with transmit timestamps opens
+  tasks: []
+verification: []
+decisions: []

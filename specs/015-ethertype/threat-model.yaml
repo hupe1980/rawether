@@ -1,0 +1,210 @@
+otmVersion: 0.2.0
+project:
+  id: 015-ethertype
+  name: Typed EtherType names
+threatspec:
+  actors:
+  - id: actor.caller
+    name: The application using rawether
+    trust: trusted
+  - id: actor.segment-peer
+    name: Any device able to put frames on the link
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: credential-theft
+  - disposition: not-applicable
+    reason: 'no authentication surface: names are compile-time constants'
+    technique: identity-spoofing
+  - disposition: no-threat-detected
+    reason: 'checked the filter path: names convert to the same u16 the filter compiled before; covered by threat.wrong-constant-value'
+    technique: data-tampering-in-transit
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: no audit-relevant surface
+    technique: missing-audit-trail
+  - disposition: no-threat-detected
+    reason: 'checked Display/Debug: they print a name and a number, nothing from frames'
+    technique: sensitive-data-exposure
+  - disposition: not-applicable
+    reason: no shared-tenant surface
+    technique: cross-tenant-leak
+  - disposition: no-threat-detected
+    reason: 'checked: constants and a lookup over a fixed table, no allocation from input'
+    technique: resource-exhaustion
+  - disposition: not-applicable
+    reason: no authorization surface
+    technique: broken-access-control
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  exclusions: []
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T14:05:52Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: a47667d1df8d96101f33b263b293a77c5014bdc14be5cc3c6a33811802dd8d02
+  - path: spec.md
+    sha256: a4c373afa2ff9fa999145197b3e40234d736cb3d3cd14ae4f2bbaef55dac9db7
+  surfaces:
+  - external-input
+  version: '0.1'
+trustZones:
+- id: tz.link
+  name: The Ethernet segment
+  risk:
+    trustRating: 1
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.filter-intent
+  name: The set of frames a caller means to receive, expressed through named EtherTypes
+  risk:
+    availability: 30
+    confidentiality: 40
+    integrity: 85
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-3
+    classification: internal
+components:
+- id: component.ethertype
+  name: EtherType newtype and its named constants
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-001
+dataflows:
+- id: flow.frames-to-filter
+  name: Frames from the link are matched against named EtherTypes
+  source: actor.segment-peer
+  destination: component.ethertype
+  assets:
+  - asset.filter-intent
+  attributes:
+    crosses:
+    - tz.link
+    - tz.process
+threats:
+- id: threat.length-read-as-type
+  name: An 802.3 length in the EtherType field is treated as a protocol type by a caller, misrouting LLC frames
+  categories:
+  - Tampering
+  cwes:
+  - CWE-843
+  risk:
+    impact: 40
+    likelihood: 30
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.filter-intent
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.ethertype
+    profile: stride
+    severity: low
+    technique: injection
+- id: threat.wrong-constant-value
+  name: A named constant carries a wrong value, so a caller filtering for that protocol admits other traffic (or
+    none) from the link without noticing
+  categories:
+  - Tampering
+  cwes:
+  - CWE-1068
+  risk:
+    impact: 70
+    likelihood: 30
+  attributes:
+    source: spec.md#User-Story-3
+    assets:
+    - asset.filter-intent
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.ethertype
+    - flow.frames-to-filter
+    profile: stride
+    severity: medium
+    technique: injection
+mitigations:
+- id: mitigation.is-length
+  name: EtherType::is_length and Display of lengths as numbers only
+  riskReduction: 60
+  attributes:
+    threats:
+    - threat.length-read-as-type
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/ethertype.rs
+- id: mitigation.registry-table-test
+  name: A table test pins every constant to its registry value and source, and checks uniqueness and agreement with
+    TagKind
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.wrong-constant-value
+    status: verified
+    kind: detective
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/ethertype.rs
+requirements:
+- id: SR-001
+  statement: Every named EtherType MUST equal its registry value, no two names MAY share a value, and VLAN/QINQ
+    MUST equal TagKind's TPIDs.
+  priority: P2
+  mitigations:
+  - mitigation.registry-table-test
+  acceptance:
+  - given: the table of names, values and sources
+    then: every constant matches, values are unique, VLAN = TagKind::Customer.tpid(), QINQ = TagKind::Service.tpid()
+    when: the test runs
+  tasks: []
+- id: SR-002
+  statement: A value below 0x0600 MUST report is_length() and MUST NOT print a protocol name.
+  priority: P2
+  mitigations:
+  - mitigation.is-length
+  acceptance:
+  - given: 0x0050 and 0x05ff
+    then: true, and printed as numbers only
+    when: is_length and Display run
+  tasks: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: src/ethertype.rs::tests::every_name_has_its_registry_value
+  result: pass
+  verdict: verified
+  justification: All 21 constants equal the registry table in research.md (Linux if_ether.h and IEEE assignments
+    for IEC 61850), values are unique, VLAN and QINQ equal TagKind's TPIDs; name() round-trips.
+  verified_at: '2026-11-09T14:08:27Z'
+  commit: 8fa8759
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: src/ethertype.rs::tests::lengths_and_unnamed_values_print_as_numbers
+  result: pass
+  verdict: verified
+  justification: 0x0000, 0x0050 and 0x05ff report is_length() and no name and print as numbers; 0x0600 is not a
+    length; 0x9100 is unnamed.
+  verified_at: '2026-11-09T14:08:27Z'
+  commit: 8fa8759
+decisions: []

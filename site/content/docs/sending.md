@@ -12,11 +12,11 @@ group = "Guides"
 `FrameBuilder` describes the header once and writes frames into a buffer you keep:
 
 ```rust
-use rawether::{FrameBuilder, MacAddr, TagKind, VlanTag};
+use rawether::{EtherType, FrameBuilder, MacAddr, TagKind, VlanTag};
 
 let dst: MacAddr = "01:1b:19:00:00:00".parse()?;
 let tag = VlanTag::new(TagKind::Customer, 4, false, 100)?; // PCP 4, VLAN 100
-let header = FrameBuilder::new(dst, sock.mac_address(), 0x88b5).vlan(tag);
+let header = FrameBuilder::new(dst, sock.mac_address(), EtherType::LOCAL_EXPERIMENTAL_1).vlan(tag);
 
 let mut buf = Vec::with_capacity(1518);
 for payload in payloads {

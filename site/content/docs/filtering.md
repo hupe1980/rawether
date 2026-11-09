@@ -12,13 +12,33 @@ A busy link carries far more frames than one protocol needs. rawether filters in
 ## By EtherType
 
 ```rust
+use rawether::EtherType;
+
 // PTP and LLDP; untagged, single-tagged or double-tagged.
-let sock = rawether::Config::new("eth0").ethertypes(&[0x88f7, 0x88cc]).open()?;
+let sock = rawether::Config::new("eth0").ethertypes([EtherType::PTP, EtherType::LLDP]).open()?;
 ```
 
-`ethertypes` compiles to a classic-BPF program that checks the EtherType at offset 12 (untagged), 16 (behind one 802.1Q or 802.1ad tag) and 20 (behind two). It is also correct when the driver has stripped the outer tag into metadata, because the inner EtherType is then at offset 12. A set holds 1 to 64 types; for more, write your own program. When you read a received frame with `p.frame()`, it steps over the same tags, so `ethertype()` is always one of the types you filtered for.
+`ethertypes` compiles to a classic-BPF program that checks the EtherType at offset 12 (untagged), 16 (behind one 802.1Q or 802.1ad tag) and 20 (behind two). It is also correct when the driver has stripped the outer tag into metadata, because the inner EtherType is then at offset 12. A set holds 1 to 64 types; for more, write your own program. Names, numbers or a mix all work: `.ethertypes([EtherType::GOOSE, EtherType(0x88b5)])` or `.ethertypes(&[0x88b5u16])`. When you read a received frame with `p.frame()`, it steps over the same tags, so `ethertype()` is always one of the types you filtered for.
 
 The default, `Filter::All`, receives every frame on the interface that the NIC accepts. Which frames the NIC accepts is decided by the address filter below.
+
+## EtherType names
+
+`EtherType` holds any 16-bit value and names the well-known ones, each checked against the IEEE registry:
+
+| Name | Value | Protocol |
+|---|---|---|
+| `IPV4`, `ARP`, `IPV6` | 0x0800, 0x0806, 0x86DD | IP |
+| `VLAN`, `QINQ` | 0x8100, 0x88A8 | 802.1Q and 802.1ad tags |
+| `LLDP`, `PTP` | 0x88CC, 0x88F7 | Discovery, IEEE 1588 |
+| `AVTP` | 0x22F0 | IEEE 1722 (TSN streams) |
+| `GOOSE`, `GSE`, `SAMPLED_VALUES` | 0x88B8, 0x88B9, 0x88BA | IEC 61850 |
+| `PROFINET`, `ETHERCAT` | 0x8892, 0x88A4 | Industrial Ethernet |
+| `PRP`, `HSR`, `MRP` | 0x88FB, 0x892F, 0x88E3 | Redundancy (IEC 62439) |
+| `MACSEC`, `EAPOL`, `CFM` | 0x88E5, 0x888E, 0x8902 | Security, 802.1X, fault management |
+| `LOCAL_EXPERIMENTAL_1`, `_2` | 0x88B5, 0x88B6 | Your own test traffic |
+
+Printed, a named type reads `PTP (0x88f7)` and any other `0x1234`. `is_length()` tells an IEEE 802.3 length (below 0x0600) from a type. Names identify protocols; rawether parses nothing after the EtherType.
 
 ## Which addresses the NIC accepts
 
@@ -33,10 +53,10 @@ A NIC normally drops frames that are not addressed to it. Three settings widen t
 All three are off by default. Join only the groups your protocol uses: other hosts' traffic is none of your program's business, and the [threat model](@/docs/threat-model.md) counts exposing it as a class (T-07).
 
 ```rust
-use rawether::{Config, MacAddr};
+use rawether::{Config, EtherType, MacAddr};
 
 const LLDP_NEAREST_BRIDGE: MacAddr = MacAddr([0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e]);
-let sock = Config::new("eth0").ethertypes(&[0x88cc]).join(LLDP_NEAREST_BRIDGE).open()?;
+let sock = Config::new("eth0").ethertypes([EtherType::LLDP]).join(LLDP_NEAREST_BRIDGE).open()?;
 ```
 
 Group addresses can also be parsed: `"01-1b-19-00-00-00".parse::<MacAddr>()?`.

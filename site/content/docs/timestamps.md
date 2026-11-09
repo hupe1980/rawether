@@ -1,6 +1,6 @@
 +++
 title = "Timestamps"
-description = "Receive timestamps in rawether: software timestamps from the kernel, hardware timestamps from the NIC's PTP clock on Linux, and the label on every frame that says which clock stamped it."
+description = "Receive and transmit timestamps in rawether: the kernel's or the NIC's clock, labelled per frame, transmit timestamps matched to their frame by id, the PTP hardware clock behind an interface, and a NIC configuration that is never lowered."
 weight = 50
 
 [extra]
@@ -52,12 +52,44 @@ A NIC's timestamping configuration is device-wide: `ptp4l` and other programs re
 
 | The NIC currently | rawether |
 |---|---|
-| Stamps received frames (all, or PTP only, as `ptp4l` sets it) | Leaves it alone and asks for its stamps. No `CAP_NET_ADMIN` needed |
-| Stamps nothing | Widens the receive filter to all frames, keeping transmit stamping as it is. Needs `CAP_NET_ADMIN` |
+| Stamps what you asked for (received frames: all or PTP only; transmitted frames: on or a one-step mode), as `ptp4l` sets it | Leaves it alone and asks for its stamps. No `CAP_NET_ADMIN` needed |
+| Stamps nothing in the direction you asked for | Widens only that: the receive filter from none to all, transmit stamping from off to on. Needs `CAP_NET_ADMIN` |
 | Has no hardware stamping, or its configuration cannot be read | Writes nothing; frames get `Software` stamps |
 
 `sock.timestamping()` tells you what the socket delivers, and each frame's `t.source` says what it got. With a PTP-only filter, PTP frames are stamped `Hardware` and the others `Software`. `ethtool -T eth0` lists what a NIC supports.
 
+## Transmit timestamps
+
+PTP, Sampled Values publishers and latency measurements need the time a frame *left*. Turn on transmit timestamps (Linux), note each frame's id, and read the timestamps back:
+
+```rust
+use std::time::Duration;
+use rawether::{Config, Timestamping};
+
+let mut sock = Config::new("eth0").tx_timestamping(Timestamping::Hardware).open()?;
+let id = sock.next_tx_id();
+sock.send(&sync_frame)?;
+if let Some(t) = sock.tx_timestamp(Some(Duration::from_millis(10)))? {
+    assert_eq!(t.id, id);
+    println!("left at {} ns, {:?} clock", t.timestamp.as_nanos(), t.timestamp.source);
+}
+```
+
+- **Ids.** Every frame sent gets the next id, singly or in a batch (consecutive ids), with or without a launch time. On Linux 6.13 and later rawether passes each id to the kernel (`SCM_TS_OPT_ID`), so ids stay exact even when a send fails. On older kernels the kernel numbers frames itself, and a send refused after numbering (a qdisc drop) shifts later ids by one. rawether detects which applies.
+- **Order.** Timestamps may come back out of order: match them by `id`.
+- **Clock.** `Hardware` is the NIC's clock where it stamps transmitted frames, otherwise you get `Software` (the kernel's, as the frame reaches the driver). `sock.tx_timestamping()` says which.
+- **Read as you go.** The kernel holds only a few hundred unread reports (bounded by the socket's receive buffer) and drops the rest silently. rawether keeps up to 1 024 that it has read; beyond that it drops the oldest and counts them in `tx_errors().timestamps_lost`.
+- **Launch times.** Timestamps and launch-time drop reports share the kernel's error queue; rawether separates them, so neither loses the other.
+
+## Which clock
+
+A hardware timestamp is only useful next to the clock that made it. `rawether::timestamp_info(interface)` (or `sock.timestamp_info()`) says what an interface stamps, and which PTP hardware clock (`/dev/ptpN`) its hardware stamps come from. Compare those with the clock that `ptp4l`/`phc2sys` disciplines. It needs no privilege:
+
+```rust
+let info = rawether::timestamp_info("eth0")?;
+println!("hardware rx {} tx {}, clock {:?}", info.hardware_rx, info.hardware_tx, info.phc_path());
+```
+
 ## macOS and FreeBSD
 
-BPF stamps each frame in the kernel. rawether reports these as `Software` stamps on the system clock. The BPF header carries microseconds, so `nanos` is a multiple of 1000. Hardware timestamps are not available.
+BPF stamps each received frame in the kernel. rawether reports these as `Software` stamps on the system clock. The BPF header carries microseconds, so `nanos` is a multiple of 1000. There are no hardware or transmit timestamps: asking for transmit timestamps makes `open` fail with `Unsupported`, and `timestamp_info` reports software receive stamps and no hardware clock.

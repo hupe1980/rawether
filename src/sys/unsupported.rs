@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::bpf::Program;
 use crate::config::{Clock, Config, Timestamping};
-use crate::packet::{MacAddr, Packet, RxPath, Stats, TxErrors};
+use crate::packet::{MacAddr, Packet, RxPath, Stats, TimestampInfo, TxErrors, TxTimestamp};
 
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -51,6 +51,15 @@ impl Inner {
     pub(crate) fn stats(&mut self) -> io::Result<Stats> {
         match self.0 {}
     }
+    pub(crate) fn tx_timestamping(&self) -> Timestamping {
+        match self.0 {}
+    }
+    pub(crate) fn next_tx_id(&self) -> u32 {
+        match self.0 {}
+    }
+    pub(crate) fn tx_timestamp(&mut self, _: Option<Duration>) -> io::Result<Option<TxTimestamp>> {
+        match self.0 {}
+    }
     pub(crate) fn timestamping(&self) -> Timestamping {
         match self.0 {}
     }
@@ -73,4 +82,8 @@ pub(crate) fn clock_now(_: Clock) -> io::Result<Duration> {
 
 pub(crate) fn drop_capabilities() -> io::Result<()> {
     Ok(())
+}
+
+pub(crate) fn timestamp_info(_: &str) -> io::Result<TimestampInfo> {
+    Err(unsupported())
 }

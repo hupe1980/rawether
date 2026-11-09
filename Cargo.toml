@@ -1,9 +1,10 @@
 [package]
 name = "rawether"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
+authors = ["hupe1980"]
 description = "Raw layer-2 Ethernet I/O: AF_PACKET with TPACKET_V3 rings, hardware timestamps, SO_TXTIME and classic BPF on Linux; BPF devices on macOS and FreeBSD."
 repository = "https://github.com/hupe1980/rawether"
 documentation = "https://docs.rs/rawether"

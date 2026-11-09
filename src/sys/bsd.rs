@@ -17,7 +17,9 @@ use super::unix::{Ready, ifr_name, interface_index, last_error, set_nonblocking,
 use crate::bpf::Program;
 use crate::bpf_record::{self, Layout};
 use crate::config::{Clock, Config, Timestamping};
-use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
+use crate::packet::{
+    MacAddr, Packet, RxPath, Stats, Timestamp, TimestampInfo, TimestampSource, TxErrors, TxTimestamp,
+};
 
 /// `BIOCSDIRECTION` (`_IOW('B', 119, u_int)`) and `BPF_D_IN` (FreeBSD `<net/bpf.h>`): see only
 /// incoming frames. Not exported by `libc`; FreeBSD's `BIOCSSEESENT` is an alias of it.
@@ -70,6 +72,12 @@ pub(crate) struct Inner {
 
 impl Inner {
     pub(crate) fn open(cfg: &Config, program: Option<&Program>) -> io::Result<Inner> {
+        if cfg.tx_timestamping != Timestamping::Off {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "transmit timestamps are Linux-only: BPF devices do not report them",
+            ));
+        }
         if cfg.tx_time.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -165,6 +173,18 @@ impl Inner {
         self.fd.as_fd()
     }
 
+    pub(crate) fn tx_timestamping(&self) -> Timestamping {
+        Timestamping::Off
+    }
+
+    pub(crate) fn next_tx_id(&self) -> u32 {
+        0
+    }
+
+    pub(crate) fn tx_timestamp(&mut self, _: Option<Duration>) -> io::Result<Option<TxTimestamp>> {
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "transmit timestamps are off (and Linux-only)"))
+    }
+
     pub(crate) fn timestamping(&self) -> Timestamping {
         // BPF stamps in software; a request for hardware stamps gets those.
         if self.timestamping == Timestamping::Off { Timestamping::Off } else { Timestamping::Software }
@@ -192,7 +212,7 @@ impl Inner {
             self.end = 0;
             let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
             // On `Ready::Error` the read below returns the device's error.
-            if wait(self.fd.as_fd(), remaining)? == Ready::Timeout {
+            if wait(self.fd.as_fd(), remaining, libc::POLLIN)? == Ready::Timeout {
                 return Ok(None);
             }
             // SAFETY: reads at most `buf.len()` octets into `buf`, as BPF requires.
@@ -256,6 +276,12 @@ impl Inner {
         self.nonblocking = on;
         Ok(())
     }
+}
+
+/// BPF stamps received frames in software; there are no transmit stamps and no hardware clock.
+pub(crate) fn timestamp_info(name: &str) -> io::Result<TimestampInfo> {
+    interface_index(name)?;
+    Ok(TimestampInfo { software_rx: true, ..TimestampInfo::default() })
 }
 
 fn open_device() -> io::Result<OwnedFd> {
@@ -411,6 +437,19 @@ pub(crate) fn drop_capabilities() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec 007 SR-006: transmit timestamps are refused, naming them; capabilities are known.
+    #[test]
+    #[cfg_attr(miri, ignore)] // system calls
+    fn transmit_timestamps_are_unsupported_and_capabilities_are_reported() {
+        let e = Inner::open(&Config::new("lo0").tx_timestamping(Timestamping::Software), None)
+            .expect_err("no tx stamps");
+        assert_eq!(e.kind(), io::ErrorKind::Unsupported);
+        assert!(e.to_string().contains("transmit timestamps"), "{e}");
+        let info = timestamp_info("lo0").expect("lo0 exists");
+        assert!(info.software_rx && !info.software_tx && info.phc_index.is_none());
+        assert_eq!(timestamp_info("no-such-if0").expect_err("missing").kind(), io::ErrorKind::NotFound);
+    }
 
     /// The ioctl numbers rawether defines itself, against `<sys/sockio.h>` and `<net/bpf.h>`.
     #[test]

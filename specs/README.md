@@ -53,3 +53,12 @@ never by the documentation alone.
 | [001-raw-l2-crate](001-raw-l2-crate/spec.md) | rawether 0.1.0 — raw layer-2 Ethernet I/O |
 | [002-ethernet-frames](002-ethernet-frames/spec.md) | Ethernet frame views (`Frame`), frame building (`FrameBuilder`) and replies |
 | [003-audit-remediation](003-audit-remediation/spec.md) | Audit remediation: FreeBSD receive, a process-wide capability drop, hardware timestamps that never lower the NIC's configuration, link-loss errors, checked arithmetic and control messages, Miri, fuzzing and a FreeBSD lane |
+
+### 0.2.0
+
+| Record | Change |
+|---|---|
+| [007-ptp-precision](007-ptp-precision/spec.md) | Transmit timestamps with exact ids, PTP hardware clock discovery |
+| [015-ethertype](015-ethertype/spec.md) | Typed EtherType names (constitution 2.0.0) |
+| [004-macos-receive](004-macos-receive/spec.md) | The BPF suite on macOS 15 and 26 and FreeBSD 14 |
+| [006-bench](006-bench/spec.md) | Published receive benchmarks |

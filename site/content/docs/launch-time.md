@@ -68,7 +68,7 @@ sock.send_at(&frame, launch.as_nanos() as u64)?;
 
 ```rust
 let errors = sock.tx_errors()?;
-if errors.total() > 0 {
+if errors.dropped() > 0 {
     eprintln!("{} missed their launch time, {} had invalid parameters", errors.missed, errors.invalid);
 }
 ```

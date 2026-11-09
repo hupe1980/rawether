@@ -8,16 +8,16 @@
 //! Ethernet minimum, ready for [`Socket::send`](crate::Socket::send).
 //!
 //! ```
-//! use rawether::{Frame, FrameBuilder, MacAddr, TagKind, VlanTag};
+//! use rawether::{EtherType, Frame, FrameBuilder, MacAddr, TagKind, VlanTag};
 //!
 //! # fn main() -> std::io::Result<()> {
 //! let me = MacAddr([0x02, 0, 0, 0, 0, 1]);
 //! let tag = VlanTag::new(TagKind::Customer, 5, false, 100)?;
 //! let mut buf = Vec::with_capacity(1518);
-//! FrameBuilder::new(MacAddr::BROADCAST, me, 0x88b5).vlan(tag).write(&mut buf, b"hello");
+//! FrameBuilder::new(MacAddr::BROADCAST, me, EtherType::LOCAL_EXPERIMENTAL_1).vlan(tag).write(&mut buf, b"hello");
 //!
 //! let f = Frame::new(&buf).expect("a whole header");
-//! assert_eq!((f.source(), f.ethertype()), (me, 0x88b5));
+//! assert_eq!((f.source(), f.ethertype()), (me, EtherType::LOCAL_EXPERIMENTAL_1));
 //! assert_eq!(f.vlan_tags()[0].vid(), 100);
 //! assert_eq!(buf.len(), 60); // padded to the minimum
 //! # Ok(()) }
@@ -29,6 +29,7 @@
 
 use std::io;
 
+use crate::EtherType;
 use crate::packet::MacAddr;
 
 /// The shortest Ethernet frame, without the frame check sequence the NIC appends: 64 − 4
@@ -154,7 +155,7 @@ pub struct Frame<'a> {
     source: MacAddr,
     tags: [VlanTag; MAX_TAGS],
     tag_count: usize,
-    ethertype: u16,
+    ethertype: EtherType,
 }
 
 impl<'a> Frame<'a> {
@@ -177,7 +178,7 @@ impl<'a> Frame<'a> {
                 _ => break field,
             }
         };
-        Some(Frame { data, destination, source, tags, tag_count, ethertype })
+        Some(Frame { data, destination, source, tags, tag_count, ethertype: EtherType(ethertype) })
     }
 
     /// The destination address.
@@ -197,7 +198,7 @@ impl<'a> Frame<'a> {
 
     /// The EtherType after the tags. A value below 0x0600 is an IEEE 802.3 length rather than
     /// a type; it is reported unchanged.
-    pub fn ethertype(&self) -> u16 {
+    pub fn ethertype(&self) -> EtherType {
         self.ethertype
     }
 
@@ -251,12 +252,12 @@ pub struct FrameBuilder {
     source: MacAddr,
     tags: [VlanTag; MAX_TAGS],
     tag_count: usize,
-    ethertype: u16,
+    ethertype: EtherType,
 }
 
 impl FrameBuilder {
     /// An untagged frame from `source` to `destination` of type `ethertype`.
-    pub const fn new(destination: MacAddr, source: MacAddr, ethertype: u16) -> FrameBuilder {
+    pub const fn new(destination: MacAddr, source: MacAddr, ethertype: EtherType) -> FrameBuilder {
         FrameBuilder { destination, source, tags: [NO_TAG; MAX_TAGS], tag_count: 0, ethertype }
     }
 
@@ -321,7 +322,7 @@ impl FrameBuilder {
             put(&tag.kind.tpid().to_be_bytes());
             put(&tag.tci.to_be_bytes());
         }
-        put(&self.ethertype.to_be_bytes());
+        put(&self.ethertype.0.to_be_bytes());
         put(payload);
         out.get_mut(at..).unwrap_or_default().fill(0);
     }
@@ -369,7 +370,7 @@ mod tests {
     fn a_view_names_the_header_fields_with_and_without_tags() {
         let f = raw(&[], 0, 0x88b5, 60);
         let v = Frame::new(&f).expect("untagged");
-        assert_eq!((v.destination(), v.source(), v.ethertype()), (B, A, 0x88b5));
+        assert_eq!((v.destination(), v.source(), v.ethertype()), (B, A, EtherType(0x88b5)));
         assert_eq!(v.vlan_tags(), &[] as &[VlanTag]);
         assert_eq!(v.payload(), &f[14..]);
 
@@ -387,7 +388,7 @@ mod tests {
             (tags[1].kind(), tags[1].pcp(), tags[1].dei(), tags[1].vid()),
             (TagKind::Customer, 5, true, 7)
         );
-        assert_eq!((v.ethertype(), v.header_len(), v.payload()), (0x88b6, 22, &f[22..]));
+        assert_eq!((v.ethertype(), v.header_len(), v.payload()), (EtherType(0x88b6), 22, &f[22..]));
 
         assert!(Frame::new(&f[..13]).is_none());
         assert!(Frame::new(&raw(&[0x8100], 1, 0x88b5, 0)[..16]).is_none(), "a tag announced but cut off");
@@ -481,7 +482,7 @@ mod tests {
                     let f = raw(layout, 0x0064, ty, 64);
                     let v = Frame::new(&f).expect("long enough");
                     let accepted = filter.run(&f) != 0;
-                    assert_eq!(accepted, set.contains(&v.ethertype()), "{set:x?} {layout:x?} {ty:04x}");
+                    assert_eq!(accepted, set.contains(&v.ethertype().0), "{set:x?} {layout:x?} {ty:04x}");
                 }
             }
         }
@@ -490,7 +491,7 @@ mod tests {
     /// Spec 002 SR-004: a reused buffer holds exactly the new frame, zero-padded.
     #[test]
     fn building_replaces_the_buffer_and_pads_with_zeros() {
-        let b = FrameBuilder::new(B, A, 0x88b5);
+        let b = FrameBuilder::new(B, A, EtherType(0x88b5));
         let mut buf = vec![0xaa; 1518];
         let cap = buf.capacity();
         b.write(&mut buf, b"hello");
@@ -517,10 +518,10 @@ mod tests {
         let c = VlanTag::new(TagKind::Customer, 3, false, 42).expect("tag");
         let s = VlanTag::new(TagKind::Service, 0, true, 7).expect("tag");
         let builders = [
-            FrameBuilder::new(B, A, 0x88b5),
-            FrameBuilder::new(B, A, 0x88b5).vlan(c),
-            FrameBuilder::new(B, A, 0x88b5).vlans(s, c),
-            FrameBuilder::new(B, A, 0x88b5).vlans(s, c).vlan(c),
+            FrameBuilder::new(B, A, EtherType(0x88b5)),
+            FrameBuilder::new(B, A, EtherType(0x88b5)).vlan(c),
+            FrameBuilder::new(B, A, EtherType(0x88b5)).vlans(s, c),
+            FrameBuilder::new(B, A, EtherType(0x88b5)).vlans(s, c).vlan(c),
         ];
         let mut buf = Vec::new();
         for b in builders {
@@ -529,13 +530,13 @@ mod tests {
                 b.write(&mut buf, &payload);
                 assert_eq!(buf.len(), b.frame_len(n));
                 let v = Frame::new(&buf).expect("view");
-                assert_eq!((v.destination(), v.source(), v.ethertype()), (B, A, 0x88b5));
+                assert_eq!((v.destination(), v.source(), v.ethertype()), (B, A, EtherType(0x88b5)));
                 assert_eq!(v.vlan_tags().len(), (b.header_len() - 14) / 4);
                 assert_eq!(&v.payload()[..n], payload.as_slice());
             }
         }
-        assert_eq!(FrameBuilder::new(B, A, 0x88b5).frame_len(5), 60);
-        assert_eq!(FrameBuilder::new(B, A, 0x88b5).vlan(c).frame_len(1500), 1518);
+        assert_eq!(FrameBuilder::new(B, A, EtherType(0x88b5)).frame_len(5), 60);
+        assert_eq!(FrameBuilder::new(B, A, EtherType(0x88b5)).vlan(c).frame_len(1500), 1518);
         assert_eq!(builders[3].vlan_tags_for_test(), &[c], "vlan() replaces the tags");
     }
 
@@ -555,7 +556,7 @@ mod tests {
         let mut buf = Vec::new();
         v.reply(me).expect("unicast source").write(&mut buf, b"pong");
         let r = Frame::new(&buf).expect("reply");
-        assert_eq!((r.destination(), r.source(), r.ethertype()), (A, me, 0x88b5));
+        assert_eq!((r.destination(), r.source(), r.ethertype()), (A, me, EtherType(0x88b5)));
         assert_eq!(r.vlan_tags(), v.vlan_tags());
         assert_eq!(&r.payload()[..4], b"pong");
 

@@ -1,0 +1,143 @@
+otmVersion: 0.2.0
+project:
+  id: 004-macos-receive
+  name: BSD receive proven
+threatspec:
+  actors:
+  - id: actor.maintainer
+    name: The maintainer reading CI results
+    trust: trusted
+  - id: actor.segment-peer
+    name: Any device able to put frames on the link
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: credential-theft
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: identity-spoofing
+  - disposition: no-threat-detected
+    reason: 'checked: the suite only observes the existing BPF backend; no new data path'
+    technique: data-tampering-in-transit
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: no audit-relevant surface
+    technique: missing-audit-trail
+  - disposition: no-threat-detected
+    reason: 'checked: the CI step widens /dev/bpf* access only inside a throwaway runner'
+    technique: sensitive-data-exposure
+  - disposition: not-applicable
+    reason: no shared-tenant surface
+    technique: cross-tenant-leak
+  - disposition: no-threat-detected
+    reason: 'checked: fixed frame counts and timeouts'
+    technique: resource-exhaustion
+  - disposition: no-threat-detected
+    reason: 'checked: the suite exercises the existing /dev/bpf permission check, it adds none'
+    technique: broken-access-control
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  exclusions:
+  - entity: Interface pair
+    reason: test fixture, modelled as component.bsd-suite
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T14:09:25Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 52e5dc8f43fe63ee60cdb3d54adec8de20147540bfea40e0c8e567ef26db3e3a
+  - path: spec.md
+    sha256: 8b40090ee8755dc4bb4d661f1cd277dce0e106280b16391f936e5cd70a04dd50
+  surfaces:
+  - external-input
+  version: '0.1'
+trustZones:
+- id: tz.ci
+  name: CI runners
+  risk:
+    trustRating: 6
+assets:
+- id: asset.platform-claims
+  name: The truth of the README's macOS and FreeBSD claims
+  risk:
+    availability: 30
+    confidentiality: 0
+    integrity: 80
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-1
+    classification: public
+components:
+- id: component.bsd-suite
+  name: BPF kernel suite and its CI lanes
+  type: library
+  parent:
+    trustZone: tz.ci
+  attributes:
+    source: spec.md#FR-001
+dataflows:
+- id: flow.ci-results
+  name: CI results inform the maintainer
+  source: component.bsd-suite
+  destination: actor.maintainer
+  assets:
+  - asset.platform-claims
+  attributes:
+    crosses:
+    - tz.ci
+threats:
+- id: threat.silent-skip
+  name: The BSD suite skips silently in CI when the pair cannot be created, so a green lane claims receive works
+    when nothing ran
+  categories:
+  - Repudiation
+  cwes:
+  - CWE-1164
+  risk:
+    impact: 60
+    likelihood: 50
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.platform-claims
+    status: open
+    actor: actor.maintainer
+    disposition: threat
+    elements:
+    - component.bsd-suite
+    - flow.ci-results
+    profile: stride
+    severity: medium
+    technique: missing-audit-trail
+mitigations:
+- id: mitigation.require-pair
+  name: RAWETHER_REQUIRE_PAIR in CI makes a missing pair a failure
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.silent-skip
+    status: required
+    kind: detective
+    requirements:
+    - SR-001
+    touchpoints:
+    - tests/bpf.rs
+    - .github/workflows/ci.yml
+requirements:
+- id: SR-001
+  statement: In CI the BSD suite MUST fail, not skip, when its interface pair is missing.
+  priority: P2
+  mitigations:
+  - mitigation.require-pair
+  acceptance:
+  - given: RAWETHER_REQUIRE_PAIR set and no pair
+    then: it fails naming the missing pair
+    when: the suite starts
+  tasks: []
+verification: []
+decisions: []

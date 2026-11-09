@@ -20,7 +20,7 @@ answered with a pointer upstream.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 0.2.x | Yes |
 | Earlier | No |
 
 Before 1.0 only the latest minor version gets fixes; there are no backports.

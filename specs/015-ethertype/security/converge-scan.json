@@ -1,0 +1,142 @@
+{
+  "feature": "015-ethertype",
+  "commit": "8fa8759",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "Every named EtherType MUST equal its registry value, no two names MAY share a value, and VLAN/QINQ MUST equal TagKind's TPIDs.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the table of names, values and sources",
+          "then": "every constant matches, values are unique, VLAN = TagKind::Customer.tpid(), QINQ = TagKind::Service.tpid()",
+          "when": "the test runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.registry-table-test"
+      ],
+      "tasks": [
+        {
+          "id": "T001",
+          "done": true,
+          "text": "[SR-001] [SR-002] src/ethertype.rs: `EtherType(pub u16)` (`repr(transparent)`, Copy/Eq/Ord/Hash), the 21 constants of research.md with their source in rustdoc, `name()`, `is_length()`, `Display`/`Debug`, `From<u16>`/`From<EtherType> for u16`; table test against research.md, uniqueness, VLAN/QINQ = TagKind TPIDs; Display/is_length tests"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/ethertype.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "A value below 0x0600 MUST report is_length() and MUST NOT print a protocol name.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "0x0050 and 0x05ff",
+          "then": "true, and printed as numbers only",
+          "when": "is_length and Display run"
+        }
+      ],
+      "mitigations": [
+        "mitigation.is-length"
+      ],
+      "tasks": [
+        {
+          "id": "T001",
+          "done": true,
+          "text": "[SR-001] [SR-002] src/ethertype.rs: `EtherType(pub u16)` (`repr(transparent)`, Copy/Eq/Ord/Hash), the 21 constants of research.md with their source in rustdoc, `name()`, `is_length()`, `Display`/`Debug`, `From<u16>`/`From<EtherType> for u16`; table test against research.md, uniqueness, VLAN/QINQ = TagKind TPIDs; Display/is_length tests"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/drop_capabilities.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/ethertype.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.length-read-as-type",
+    "threat.wrong-constant-value"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 2,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 2
+    },
+    "threats_by_severity": {
+      "low": 1,
+      "medium": 1
+    },
+    "mitigations": 2,
+    "requirements": 2,
+    "requirements_with_tasks": 2,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "medium": 2
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

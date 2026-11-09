@@ -3,6 +3,8 @@
 //! Every `unsafe` block below wraps one system call or one access to the memory the kernel
 //! shares through the ring, and says why it is sound.
 
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -16,6 +18,7 @@ use crate::bpf::Program;
 use crate::config::{Clock, Config, RingConfig, RxMode, Timestamping, TxTime};
 use crate::hwtstamp::{self, Plan};
 use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
+use crate::packet::{TimestampInfo, TxTimestamp};
 use crate::ring::{self, Cursor};
 use crate::vlan;
 
@@ -30,6 +33,24 @@ const PACKET_TX_TIMESTAMP: libc::c_int = 16;
 const SO_EE_ORIGIN_TXTIME: u8 = 6;
 const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
 const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
+/// `SCM_TS_OPT_ID` (`<asm-generic/socket.h>`, Linux 6.13): the transmit timestamp id of one
+/// send. Not exported by `libc`.
+const SCM_TS_OPT_ID: libc::c_int = 81;
+/// `SCM_TSTAMP_SND`: a report that the frame left (`ee_info`).
+const SCM_TSTAMP_SND: u32 = 0;
+/// Unread transmit timestamps kept per socket.
+const TX_QUEUE: usize = 1024;
+
+/// How transmit timestamp ids are assigned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdMode {
+    /// rawether passes each id with `SCM_TS_OPT_ID`; not yet accepted by the kernel.
+    Explicit,
+    /// The kernel accepted an explicit id: ids are exact.
+    Confirmed,
+    /// The kernel (before 6.13) rejected `SCM_TS_OPT_ID`: it numbers frames itself.
+    Implicit,
+}
 /// `sockaddr_ll` follows the frame header at `TPACKET_ALIGN(sizeof(tpacket3_hdr))`; its
 /// `sll_pkttype` is octet 10.
 const SLL_PKTTYPE_IN_RING: usize = 48 + 10;
@@ -157,6 +178,13 @@ pub(crate) struct Inner {
     stats: Stats,
     /// Launch-time drops read from the error queue and not yet returned by `tx_errors`.
     tx_pending: TxErrors,
+    /// The transmit timestamping this socket delivers.
+    tx_timestamping: Timestamping,
+    /// The id of the next frame sent, and how ids reach the kernel.
+    next_id: Cell<u32>,
+    id_mode: Cell<IdMode>,
+    /// Transmit timestamps read from the error queue and not yet handed out.
+    tx_stamps: VecDeque<TxTimestamp>,
 }
 
 impl Inner {
@@ -193,10 +221,18 @@ impl Inner {
                 "PACKET_IGNORE_OUTGOING",
             );
         }
-        let timestamping = match cfg.timestamping {
-            Timestamping::Hardware if !hardware_timestamps(&fd, &cfg.interface) => Timestamping::Software,
-            t => t,
+        let (want_rx, want_tx) =
+            (cfg.timestamping == Timestamping::Hardware, cfg.tx_timestamping == Timestamping::Hardware);
+        let (hw_rx, hw_tx) = if want_rx || want_tx {
+            hardware_timestamps(&fd, &cfg.interface, want_rx, want_tx)
+        } else {
+            (false, false)
         };
+        let downgrade = |t: Timestamping, hw: bool| {
+            if t == Timestamping::Hardware && !hw { Timestamping::Software } else { t }
+        };
+        let timestamping = downgrade(cfg.timestamping, hw_rx);
+        let tx_timestamping = downgrade(cfg.tx_timestamping, hw_tx);
         let hardware = timestamping == Timestamping::Hardware;
 
         // `Auto` falls back to the plain path (and `rx_path` says so); an explicit ring that the
@@ -236,11 +272,24 @@ impl Inner {
 
         // The plain path's metadata: the stripped VLAN tag and the timestamps.
         setopt(&fd, libc::SOL_PACKET, libc::PACKET_AUXDATA, &1 as &libc::c_int, "PACKET_AUXDATA")?;
+        let mut flags = 0;
         if timestamping != Timestamping::Off {
-            let mut flags = libc::SOF_TIMESTAMPING_RX_SOFTWARE | libc::SOF_TIMESTAMPING_SOFTWARE;
+            flags |= libc::SOF_TIMESTAMPING_RX_SOFTWARE | libc::SOF_TIMESTAMPING_SOFTWARE;
             if hardware {
                 flags |= libc::SOF_TIMESTAMPING_RX_HARDWARE | libc::SOF_TIMESTAMPING_RAW_HARDWARE;
             }
+        }
+        if tx_timestamping != Timestamping::Off {
+            // One report per frame, numbered, without the frame looped back.
+            flags |= libc::SOF_TIMESTAMPING_TX_SOFTWARE
+                | libc::SOF_TIMESTAMPING_SOFTWARE
+                | libc::SOF_TIMESTAMPING_OPT_ID
+                | libc::SOF_TIMESTAMPING_OPT_TSONLY;
+            if tx_timestamping == Timestamping::Hardware {
+                flags |= libc::SOF_TIMESTAMPING_TX_HARDWARE | libc::SOF_TIMESTAMPING_RAW_HARDWARE;
+            }
+        }
+        if flags != 0 {
             setopt(&fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPING, &(flags as libc::c_int), "SO_TIMESTAMPING")?;
         }
         if let Some(p) = cfg.priority {
@@ -290,6 +339,14 @@ impl Inner {
             ctrl: [0; 64],
             stats: Stats::default(),
             tx_pending: TxErrors::default(),
+            tx_timestamping,
+            next_id: Cell::new(0),
+            id_mode: Cell::new(IdMode::Explicit),
+            tx_stamps: VecDeque::with_capacity(if tx_timestamping == Timestamping::Off {
+                0
+            } else {
+                TX_QUEUE
+            }),
         })
     }
 
@@ -315,6 +372,42 @@ impl Inner {
 
     pub(crate) fn timestamping(&self) -> Timestamping {
         self.timestamping
+    }
+
+    pub(crate) fn tx_timestamping(&self) -> Timestamping {
+        self.tx_timestamping
+    }
+
+    pub(crate) fn next_tx_id(&self) -> u32 {
+        self.next_id.get()
+    }
+
+    pub(crate) fn tx_timestamp(&mut self, timeout: Option<Duration>) -> io::Result<Option<TxTimestamp>> {
+        if self.tx_timestamping == Timestamping::Off {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transmit timestamps are off: turn them on with Config::tx_timestamping",
+            ));
+        }
+        let timeout = if self.nonblocking { Some(Duration::ZERO) } else { timeout };
+        let deadline = deadline(timeout);
+        loop {
+            if let Some(t) = self.tx_stamps.pop_front() {
+                return Ok(Some(t));
+            }
+            if self.drain_error_queue()? > 0 {
+                continue;
+            }
+            let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if remaining == Some(Duration::ZERO) {
+                return Ok(None);
+            }
+            // Events 0: woken by the error queue only, not by frames waiting to be received.
+            match wait(self.fd.as_fd(), remaining, 0)? {
+                Ready::Timeout => return Ok(None),
+                Ready::Readable | Ready::Error => self.on_socket_error()?,
+            }
+        }
     }
 
     pub(crate) fn recv(&mut self, timeout: Option<Duration>) -> io::Result<Option<Packet<'_>>> {
@@ -408,7 +501,7 @@ impl Inner {
             if remaining == Some(Duration::ZERO) {
                 return Ok(None);
             }
-            match wait(self.fd.as_fd(), remaining)? {
+            match wait(self.fd.as_fd(), remaining, libc::POLLIN)? {
                 Ready::Readable => {}
                 Ready::Timeout => return Ok(None),
                 Ready::Error => self.on_socket_error()?,
@@ -436,7 +529,7 @@ impl Inner {
     ) -> io::Result<Option<(usize, usize, usize, Option<Timestamp>, bool)>> {
         loop {
             let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
-            match wait(self.fd.as_fd(), remaining)? {
+            match wait(self.fd.as_fd(), remaining, libc::POLLIN)? {
                 Ready::Readable => {}
                 Ready::Timeout => return Ok(None),
                 Ready::Error => {
@@ -536,11 +629,67 @@ impl Inner {
     }
 
     pub(crate) fn send(&self, frame: &[u8]) -> io::Result<()> {
-        // SAFETY: `frame` is a live slice whose length is passed; the socket is bound, so no
-        // address is needed.
-        let n = unsafe { libc::send(self.fd.as_raw_fd(), frame.as_ptr().cast(), frame.len(), 0) };
+        self.send_one(frame, None).map_err(|e| io::Error::new(e.kind(), format!("send: {e}")))
+    }
+
+    pub(crate) fn send_at(&self, frame: &[u8], launch_ns: u64) -> io::Result<()> {
+        if self.tx_time.is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "send_at needs Config::tx_time"));
+        }
+        self.send_one(frame, Some(launch_ns)).map_err(|e| {
+            // The qdisc dropped the frame at enqueue: etf refuses a launch time already past or
+            // on another clock, and reports why to `tx_errors`.
+            if e.raw_os_error() == Some(libc::ENOBUFS) {
+                io::Error::new(
+                    e.kind(),
+                    "the qdisc refused the launch time (already past, or on another clock); see tx_errors",
+                )
+            } else {
+                io::Error::new(e.kind(), format!("sendmsg with SCM_TXTIME: {e}"))
+            }
+        })
+    }
+
+    /// Send one frame with its launch time and timestamp id, if any, and advance the id.
+    fn send_one(&self, frame: &[u8], launch: Option<u64>) -> io::Result<()> {
+        let stamping = self.tx_timestamping != Timestamping::Off;
+        let mode = self.id_mode.get();
+        let id = (stamping && mode != IdMode::Implicit).then(|| self.next_id.get());
+        let mut r = self.sendmsg(frame, launch, id);
+        if id.is_some() && mode == IdMode::Explicit {
+            match &r {
+                // Before Linux 6.13 the kernel rejects SCM_TS_OPT_ID before building the frame:
+                // send again without it; if that works, the kernel numbers frames itself.
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {
+                    r = self.sendmsg(frame, launch, None);
+                    if r.is_ok() {
+                        self.id_mode.set(IdMode::Implicit);
+                    }
+                }
+                Ok(()) => self.id_mode.set(IdMode::Confirmed),
+                Err(_) => {}
+            }
+        }
+        if r.is_ok() && stamping {
+            self.next_id.set(self.next_id.get().wrapping_add(1));
+        }
+        r
+    }
+
+    /// One `sendmsg` with optional control messages; the raw OS error on failure.
+    fn sendmsg(&self, frame: &[u8], launch: Option<u64>, id: Option<u32>) -> io::Result<()> {
+        let mut ctrl = [0u64; 6];
+        let mut iov = libc::iovec { iov_base: frame.as_ptr().cast_mut().cast(), iov_len: frame.len() };
+        // SAFETY: all-zero is a valid `msghdr`.
+        let mut msg: libc::msghdr = unsafe { zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        send_cmsgs(&mut msg, &mut ctrl, launch, id);
+        // SAFETY: `msg` describes live buffers (`iov` → the caller's frame, `ctrl`); the kernel
+        // only reads them. The socket is bound, so no address is needed.
+        let n = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &raw const msg, 0) };
         if n < 0 {
-            return Err(last_error("send"));
+            return Err(io::Error::last_os_error());
         }
         if n as usize != frame.len() {
             return Err(io::Error::new(
@@ -551,64 +700,29 @@ impl Inner {
         Ok(())
     }
 
-    pub(crate) fn send_at(&self, frame: &[u8], launch_ns: u64) -> io::Result<()> {
-        if self.tx_time.is_none() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "send_at needs Config::tx_time"));
-        }
-        let mut ctrl = [0u64; 4];
-        let mut iov = libc::iovec { iov_base: frame.as_ptr().cast_mut().cast(), iov_len: frame.len() };
-        // SAFETY: all-zero is a valid `msghdr`.
-        let mut msg: libc::msghdr = unsafe { zeroed() };
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = ctrl.as_mut_ptr().cast();
-        // SAFETY: CMSG_SPACE is a pure size computation.
-        msg.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<u64>() as u32) } as _;
-        // SAFETY: `ctrl` holds `msg_controllen` octets (32 ≥ CMSG_SPACE(8) = 24) and is aligned;
-        // the header and its `u64` payload are written inside it. The kernel only reads `iov`.
-        unsafe {
-            let c = libc::CMSG_FIRSTHDR(&raw const msg);
-            if c.is_null() {
-                return Err(io::Error::other("no room for the launch-time control message"));
-            }
-            (*c).cmsg_level = libc::SOL_SOCKET;
-            (*c).cmsg_type = libc::SCM_TXTIME;
-            (*c).cmsg_len = libc::CMSG_LEN(size_of::<u64>() as u32) as _;
-            libc::CMSG_DATA(c).cast::<u64>().write_unaligned(launch_ns);
-        }
-        // SAFETY: `msg` describes live buffers as above.
-        let n = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &raw const msg, 0) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            // The qdisc dropped the frame at enqueue: etf refuses a launch time already past or
-            // on another clock, and reports why to `tx_errors`.
-            if e.raw_os_error() == Some(libc::ENOBUFS) {
-                return Err(io::Error::new(
-                    e.kind(),
-                    "the qdisc refused the launch time (already past, or on another clock); see tx_errors",
-                ));
-            }
-            return Err(io::Error::new(e.kind(), format!("sendmsg with SCM_TXTIME: {e}")));
-        }
-        Ok(())
-    }
-
     pub(crate) fn send_batch(&mut self, frames: &[&[u8]]) -> io::Result<usize> {
+        let stamping = self.tx_timestamping != Timestamping::Off;
+        let mode = self.id_mode.get();
+        let explicit = stamping && mode != IdMode::Implicit;
+        let base = self.next_id.get();
         let mut sent = 0;
         for chunk in frames.chunks(BATCH) {
             // SAFETY: all-zero values are valid for `iovec` and `mmsghdr`.
             let mut iovs: [libc::iovec; BATCH] = unsafe { zeroed() };
             // SAFETY: as above.
             let mut msgs: [libc::mmsghdr; BATCH] = unsafe { zeroed() };
-            for (k, f) in chunk.iter().enumerate() {
+            let mut ctrls = [[0u64; 6]; BATCH];
+            for (k, (f, ctrl)) in chunk.iter().zip(ctrls.iter_mut()).enumerate() {
                 iovs[k] = libc::iovec { iov_base: f.as_ptr().cast_mut().cast(), iov_len: f.len() };
                 msgs[k].msg_hdr.msg_iov = &raw mut iovs[k];
                 msgs[k].msg_hdr.msg_iovlen = 1;
+                let id = explicit.then(|| base.wrapping_add((sent + k) as u32));
+                send_cmsgs(&mut msgs[k].msg_hdr, ctrl, None, id);
             }
             let mut done = 0;
             while done < chunk.len() {
                 // SAFETY: `msgs[done..chunk.len()]` are initialised headers pointing at live
-                // iovecs that point at the caller's frames; the kernel only reads them.
+                // iovecs (the caller's frames) and control buffers; the kernel only reads them.
                 let n = unsafe {
                     libc::sendmmsg(
                         self.fd.as_raw_fd(),
@@ -618,15 +732,37 @@ impl Inner {
                     )
                 };
                 if n < 0 {
-                    let e = last_error("sendmmsg");
-                    if sent + done > 0 {
-                        return Ok(sent + done);
+                    let e = io::Error::last_os_error();
+                    if explicit
+                        && mode == IdMode::Explicit
+                        && sent + done == 0
+                        && e.raw_os_error() == Some(libc::EINVAL)
+                    {
+                        // Before Linux 6.13: no SCM_TS_OPT_ID. Retry once with kernel numbering.
+                        self.id_mode.set(IdMode::Implicit);
+                        let r = self.send_batch(frames);
+                        if r.is_err() {
+                            self.id_mode.set(IdMode::Explicit);
+                        }
+                        return r;
                     }
-                    return Err(e);
+                    if sent + done > 0 {
+                        break;
+                    }
+                    return Err(io::Error::new(e.kind(), format!("sendmmsg: {e}")));
                 }
                 done += n as usize;
             }
             sent += done;
+            if done < chunk.len() {
+                break;
+            }
+        }
+        if stamping {
+            if explicit && sent > 0 {
+                self.id_mode.set(IdMode::Confirmed);
+            }
+            self.next_id.set(base.wrapping_add(sent as u32));
         }
         Ok(sent)
     }
@@ -661,12 +797,12 @@ impl Inner {
         Ok(std::mem::take(&mut self.tx_pending))
     }
 
-    /// Read every report waiting on the error queue, counting launch-time drops into
-    /// `tx_pending`. Returns how many reports were read.
+    /// Read every report waiting on the error queue: transmit timestamps into `tx_stamps`,
+    /// launch-time drops into `tx_pending`. Returns how many reports were read.
     fn drain_error_queue(&mut self) -> io::Result<u64> {
         let mut read = 0;
         loop {
-            let mut data = [0u8; 256];
+            let mut data = [0u8; 64];
             let mut ctrl = [0u64; 32];
             let mut iov = libc::iovec { iov_base: data.as_mut_ptr().cast(), iov_len: data.len() };
             // SAFETY: all-zero is a valid `msghdr`.
@@ -691,22 +827,46 @@ impl Inner {
             if msg.msg_flags & libc::MSG_CTRUNC != 0 {
                 continue;
             }
+            let (mut stamps, mut report) = (None, None);
             // SAFETY: the kernel filled `ctrl` and set `msg_controllen`.
             let mut c = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
             while !c.is_null() {
                 // SAFETY: `c` is a header inside `msg`'s control buffer.
                 let (level, kind) = unsafe { ((*c).cmsg_level, (*c).cmsg_type) };
-                if level == libc::SOL_PACKET
-                    && kind == PACKET_TX_TIMESTAMP
+                if level == libc::SOL_PACKET && kind == PACKET_TX_TIMESTAMP {
                     // SAFETY: as above.
-                    && let Some(ee) = unsafe { cmsg_payload::<libc::sock_extended_err>(&msg, c) }
-                {
-                    count_tx_error(&mut self.tx_pending, ee.ee_origin, ee.ee_code);
+                    report = unsafe { cmsg_payload::<libc::sock_extended_err>(&msg, c) };
+                } else if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
+                    // SAFETY: as above.
+                    stamps = unsafe { cmsg_payload::<[libc::timespec; 3]>(&msg, c) };
                 }
                 // SAFETY: as above.
                 c = unsafe { libc::CMSG_NXTHDR(&raw const msg, c) };
             }
+            let Some(ee) = report else { continue };
+            match classify(ee.ee_origin, ee.ee_code, ee.ee_info, ee.ee_data) {
+                Report::Missed => self.tx_pending.missed += 1,
+                Report::Invalid => self.tx_pending.invalid += 1,
+                Report::Sent(id) => {
+                    if let Some(timestamp) = stamps.as_ref().and_then(pick_timestamp) {
+                        self.push_stamp(TxTimestamp { id, timestamp });
+                    }
+                }
+                Report::Other => {}
+            }
         }
+    }
+
+    /// Keep a transmit timestamp for `tx_timestamp`, dropping the oldest when full.
+    fn push_stamp(&mut self, t: TxTimestamp) {
+        if self.tx_timestamping == Timestamping::Off {
+            return;
+        }
+        if self.tx_stamps.len() == TX_QUEUE {
+            self.tx_stamps.pop_front();
+            self.tx_pending.timestamps_lost += 1;
+        }
+        self.tx_stamps.push_back(t);
     }
 
     pub(crate) fn set_nonblocking(&mut self, on: bool) -> io::Result<()> {
@@ -758,7 +918,7 @@ fn hardware_address(fd: &OwnedFd, name: &str) -> io::Result<MacAddr> {
     let mut ifr: libc::ifreq = unsafe { zeroed() };
     ifr.ifr_name = ifr_name(name)?;
     // SAFETY: SIOCGIFHWADDR reads the name and writes the address into `ifr`, which is live.
-    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::SIOCGIFHWADDR, &raw mut ifr) } < 0 {
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::SIOCGIFHWADDR as _, &raw mut ifr) } < 0 {
         return Err(last_error(&format!("SIOCGIFHWADDR {name}")));
     }
     // SAFETY: the kernel filled the `ifru_hwaddr` member of the union.
@@ -774,16 +934,64 @@ fn hardware_address(fd: &OwnedFd, name: &str) -> io::Result<MacAddr> {
     Ok(MacAddr(mac))
 }
 
-/// Make the NIC stamp received frames without disturbing anyone else, and say whether its
-/// stamps can be asked for. See [`hwtstamp`]: read first, never lower, never write blind.
-fn hardware_timestamps(fd: &OwnedFd, name: &str) -> bool {
-    let current = hwtstamp_ioctl(fd, name, libc::SIOCGHWTSTAMP, None).ok();
-    match hwtstamp::decide(current) {
-        Plan::Software => false,
-        Plan::Hardware => true,
-        Plan::Widen(want) => hwtstamp_ioctl(fd, name, libc::SIOCSHWTSTAMP, Some(want))
-            .is_ok_and(|now| now.rx_filter != hwtstamp::FILTER_NONE),
+/// Have the NIC stamp received (`rx`) and/or transmitted (`tx`) frames without disturbing
+/// anyone else, and say which of them it stamps. See [`hwtstamp`]: read first, never lower,
+/// never write blind.
+fn hardware_timestamps(fd: &OwnedFd, name: &str, rx: bool, tx: bool) -> (bool, bool) {
+    let Ok(current) = hwtstamp_ioctl(fd, name, libc::SIOCGHWTSTAMP, None) else { return (false, false) };
+    let now = match hwtstamp::decide(Some(current), rx, tx) {
+        Plan::Unreadable => return (false, false),
+        Plan::Keep => current,
+        Plan::Write(want) => hwtstamp_ioctl(fd, name, libc::SIOCSHWTSTAMP, Some(want)).unwrap_or(current),
+    };
+    hwtstamp::effective(now, rx, tx)
+}
+
+/// What `name` can timestamp: `ETHTOOL_GET_TS_INFO` on a plain datagram socket, unprivileged.
+pub(crate) fn timestamp_info(name: &str) -> io::Result<TimestampInfo> {
+    /// `struct ethtool_ts_info` (`<linux/ethtool.h>`).
+    #[repr(C)]
+    struct EthtoolTsInfo {
+        cmd: u32,
+        so_timestamping: u32,
+        phc_index: i32,
+        tx_types: u32,
+        tx_reserved: [u32; 3],
+        rx_filters: u32,
+        rx_reserved: [u32; 3],
     }
+    const ETHTOOL_GET_TS_INFO: u32 = 0x41;
+    let ifr_name = ifr_name(name)?;
+    // SAFETY: plain system call.
+    let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if raw < 0 {
+        return Err(last_error("socket for ETHTOOL_GET_TS_INFO"));
+    }
+    // SAFETY: `raw` was just created and is owned by nobody else.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut info = EthtoolTsInfo {
+        cmd: ETHTOOL_GET_TS_INFO,
+        so_timestamping: 0,
+        phc_index: -1,
+        tx_types: 0,
+        tx_reserved: [0; 3],
+        rx_filters: 0,
+        rx_reserved: [0; 3],
+    };
+    // SAFETY: all-zero is a valid `ifreq`.
+    let mut ifr: libc::ifreq = unsafe { zeroed() };
+    ifr.ifr_name = ifr_name;
+    ifr.ifr_ifru.ifru_data = (&raw mut info).cast();
+    // SAFETY: SIOCETHTOOL reads `cmd` and writes the rest of `info` through `ifru_data`; both
+    // live for the call, and `info` has the layout of `struct ethtool_ts_info`.
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::SIOCETHTOOL as _, &raw mut ifr) } < 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ENODEV) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("no interface named {name:?}")));
+        }
+        return Err(io::Error::new(e.kind(), format!("ETHTOOL_GET_TS_INFO on {name}: {e}")));
+    }
+    Ok(TimestampInfo::from_ethtool(info.so_timestamping, info.phc_index))
 }
 
 /// `SIOCGHWTSTAMP` (`set` = None) or `SIOCSHWTSTAMP`; returns the configuration the driver reports.
@@ -806,13 +1014,64 @@ fn hwtstamp_ioctl(
     Ok(hwtstamp::Current { flags: cfg.flags, tx_type: cfg.tx_type, rx_filter: cfg.rx_filter })
 }
 
-/// Count one error-queue report: launch-time drops by reason; anything else is not ours.
-fn count_tx_error(t: &mut TxErrors, origin: u8, code: u8) {
-    if origin == SO_EE_ORIGIN_TXTIME {
-        match code {
-            SO_EE_CODE_TXTIME_MISSED => t.missed += 1,
-            SO_EE_CODE_TXTIME_INVALID_PARAM => t.invalid += 1,
-            _ => {}
+/// What one error-queue report is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Report {
+    /// A launch time missed after the qdisc accepted the frame.
+    Missed,
+    /// A launch time the qdisc refused.
+    Invalid,
+    /// The frame with this id left; the timestamp travels in `SCM_TIMESTAMPING`.
+    Sent(u32),
+    /// Anything else (other timestamp kinds, other origins): not ours.
+    Other,
+}
+
+/// Classify a `sock_extended_err` by origin, code, info and data.
+fn classify(origin: u8, code: u8, info: u32, data: u32) -> Report {
+    match origin {
+        SO_EE_ORIGIN_TXTIME => match code {
+            SO_EE_CODE_TXTIME_MISSED => Report::Missed,
+            SO_EE_CODE_TXTIME_INVALID_PARAM => Report::Invalid,
+            _ => Report::Other,
+        },
+        libc::SO_EE_ORIGIN_TIMESTAMPING if info == SCM_TSTAMP_SND => Report::Sent(data),
+        _ => Report::Other,
+    }
+}
+
+/// Control messages for one send, in `ctrl`: a launch time (`SCM_TXTIME`) and/or a transmit
+/// timestamp id (`SCM_TS_OPT_ID`). None leaves `msg` without control data.
+fn send_cmsgs(msg: &mut libc::msghdr, ctrl: &mut [u64; 6], launch: Option<u64>, id: Option<u32>) {
+    // SAFETY: CMSG_SPACE is a pure size computation.
+    let space = |n: usize| unsafe { libc::CMSG_SPACE(n as u32) } as usize;
+    let len = launch.map_or(0, |_| space(size_of::<u64>())) + id.map_or(0, |_| space(size_of::<u32>()));
+    if len == 0 {
+        return;
+    }
+    msg.msg_control = ctrl.as_mut_ptr().cast();
+    msg.msg_controllen = len as _;
+    // SAFETY: `ctrl` holds 48 octets (≥ CMSG_SPACE(8) + CMSG_SPACE(4) = 48 on 64-bit, less on
+    // 32-bit), is zeroed and u64-aligned; each header and payload is written inside the first
+    // `msg_controllen` octets, and CMSG_NXTHDR stays inside them. The kernel only reads it.
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(msg);
+        if let Some(t) = launch
+            && !c.is_null()
+        {
+            (*c).cmsg_level = libc::SOL_SOCKET;
+            (*c).cmsg_type = libc::SCM_TXTIME;
+            (*c).cmsg_len = libc::CMSG_LEN(size_of::<u64>() as u32) as _;
+            libc::CMSG_DATA(c).cast::<u64>().write_unaligned(t);
+            c = libc::CMSG_NXTHDR(msg, c);
+        }
+        if let Some(i) = id
+            && !c.is_null()
+        {
+            (*c).cmsg_level = libc::SOL_SOCKET;
+            (*c).cmsg_type = SCM_TS_OPT_ID;
+            (*c).cmsg_len = libc::CMSG_LEN(size_of::<u32>() as u32) as _;
+            libc::CMSG_DATA(c).cast::<u32>().write_unaligned(i);
         }
     }
 }
@@ -1029,15 +1288,35 @@ mod tests {
         assert!(!holds_capabilities(&none.replace("CapAmb:\t0000000000000000\n", "")), "old kernel");
     }
 
-    /// Spec 003 SR-011: only launch-time reports count, by reason.
+    /// Spec 003 SR-011, spec 007 SR-004: launch-time reports by reason, transmit timestamps by
+    /// id, anything else ignored.
     #[test]
     fn only_launch_time_reports_are_counted() {
-        let mut t = TxErrors::default();
-        count_tx_error(&mut t, SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_MISSED);
-        count_tx_error(&mut t, SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_INVALID_PARAM);
-        count_tx_error(&mut t, libc::SO_EE_ORIGIN_LOCAL, SO_EE_CODE_TXTIME_MISSED);
-        count_tx_error(&mut t, libc::SO_EE_ORIGIN_TXSTATUS, 0);
-        assert_eq!((t.missed, t.invalid, t.total()), (1, 1, 2));
+        assert_eq!(classify(SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_MISSED, 0, 0), Report::Missed);
+        assert_eq!(classify(SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_INVALID_PARAM, 0, 0), Report::Invalid);
+        assert_eq!(classify(libc::SO_EE_ORIGIN_TIMESTAMPING, 0, SCM_TSTAMP_SND, 41), Report::Sent(41));
+        assert_eq!(classify(libc::SO_EE_ORIGIN_TIMESTAMPING, 0, 1, 41), Report::Other, "SCM_TSTAMP_SCHED");
+        assert_eq!(classify(libc::SO_EE_ORIGIN_LOCAL, SO_EE_CODE_TXTIME_MISSED, 0, 0), Report::Other);
+    }
+
+    /// Spec 007 SR-001: a launch time and an id share one control buffer.
+    #[test]
+    fn a_launch_time_and_an_id_fit_one_control_buffer() {
+        let mut ctrl = [0u64; 6];
+        // SAFETY: all-zero is a valid `msghdr`.
+        let mut msg: libc::msghdr = unsafe { zeroed() };
+        send_cmsgs(&mut msg, &mut ctrl, Some(7), Some(9));
+        // SAFETY: `msg` points at `ctrl`, which `send_cmsgs` filled with two messages.
+        unsafe {
+            let a = libc::CMSG_FIRSTHDR(&raw const msg);
+            assert_eq!(((*a).cmsg_type, cmsg_payload::<u64>(&msg, a)), (libc::SCM_TXTIME, Some(7)));
+            let b = libc::CMSG_NXTHDR(&raw const msg, a);
+            assert_eq!(((*b).cmsg_type, cmsg_payload::<u32>(&msg, b)), (SCM_TS_OPT_ID, Some(9)));
+        }
+        // SAFETY: all-zero is a valid `msghdr`.
+        let mut none: libc::msghdr = unsafe { zeroed() };
+        send_cmsgs(&mut none, &mut ctrl, None, None);
+        assert!(none.msg_control.is_null());
     }
 
     /// Spec 003 SR-005: a control message shorter than its payload type is skipped.

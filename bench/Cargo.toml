@@ -1,0 +1,15 @@
+# Receive throughput and latency of rawether against pnet_datalink and pcap, over a veth pair.
+#   scripts/bench.sh --docker
+# Not part of the published crate.
+[package]
+name = "rawether-bench"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+rawether = { path = ".." }
+pnet_datalink = "0.35"
+pcap = "2"
+
+[workspace]

@@ -135,7 +135,9 @@ impl Program {
     ///
     /// A driver that strips the outer tag into metadata leaves the inner EtherType at offset 12,
     /// which the first test covers, so the program is right whether or not tags are stripped.
-    pub fn ethertypes(types: &[u16]) -> io::Result<Program> {
+    pub fn ethertypes<T: Into<crate::EtherType>>(types: impl IntoIterator<Item = T>) -> io::Result<Program> {
+        let types: Vec<u16> = types.into_iter().map(|t| t.into().0).collect();
+        let types = types.as_slice();
         if types.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -382,7 +384,7 @@ mod tests {
 
     #[test]
     fn an_ethertype_filter_accepts_its_types_tagged_untagged_and_double_tagged() {
-        let p = Program::ethertypes(&[0x88cc, 0x88f7]).expect("program");
+        let p = Program::ethertypes([0x88ccu16, 0x88f7]).expect("program");
         for accepted in
             [&[0x88cc][..], &[0x88f7], &[0x8100, 0x88cc], &[0x88a8, 0x88f7], &[0x88a8, 0x8100, 0x88cc]]
         {
@@ -397,7 +399,7 @@ mod tests {
 
     #[test]
     fn a_frame_too_short_to_hold_a_type_is_rejected() {
-        let p = Program::ethertypes(&[0x88cc]).expect("program");
+        let p = Program::ethertypes([0x88ccu16]).expect("program");
         assert_eq!(p.run(&[0u8; 13]), 0);
         assert_eq!(p.run(&[]), 0);
     }
@@ -412,9 +414,9 @@ mod tests {
     /// Threat model T-04 (SR-004).
     #[test]
     fn the_builder_refuses_what_the_kernel_would() {
-        assert!(Program::ethertypes(&[]).is_err());
-        assert!(Program::ethertypes(&[1u16; 65]).is_err());
-        assert!(Program::ethertypes(&[1u16; 64]).is_ok());
+        assert!(Program::ethertypes::<u16>([]).is_err());
+        assert!(Program::ethertypes([1u16; 65]).is_err());
+        assert!(Program::ethertypes([1u16; 64]).is_ok());
         assert!(Program::new(vec![]).is_err());
         assert!(
             Program::new(vec![Insn::new(op::JMP | op::JEQ, 5, 0, 0), Insn::new(op::RET, 0, 0, 0)]).is_err()

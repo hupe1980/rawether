@@ -6,6 +6,33 @@ All notable changes to rawether are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- Transmit timestamps: `Config::tx_timestamping`, `Socket::next_tx_id`, `Socket::tx_timestamp`
+  and `TxTimestamp`. Each frame's id is exact on Linux 6.13 and later (`SCM_TS_OPT_ID`); hardware
+  transmit stamping follows the never-lower rule.
+- `timestamp_info` and `Socket::timestamp_info`: what an interface stamps and its PTP hardware
+  clock (`TimestampInfo::phc_path`), without privilege.
+- `TxErrors::timestamps_lost`; example `txstamp`.
+- The BPF suite runs on macOS 15, macOS 26 (`feth`) and FreeBSD 14 (`epair`) in CI.
+- Published receive benchmarks against `pcap` and `pnet_datalink` (website, `scripts/bench.sh`).
+- `EtherType`: a typed EtherType with names for 21 well-known types (IEEE registry), `Display`
+  as `PTP (0x88f7)`, and `is_length()`.
+
+### Changed
+
+- `TxErrors::total` is now `TxErrors::dropped` (launch-time drops only).
+- EtherTypes are typed: `Config::ethertypes` and `bpf::Program::ethertypes` take names, numbers
+  or both (`[EtherType::PTP]`, `&[0x88b5u16]`); `Frame::ethertype` returns `EtherType`;
+  `FrameBuilder::new` takes one.
+
+### Fixed
+
+- Builds for musl targets (an ioctl request is now cast to the libc's own type); CI lints
+  `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
+
 ## [0.1.0] - 2026-11-09
 
 First release. (0.0.1 reserved the name and contains no code.)
@@ -47,5 +74,6 @@ First release. (0.0.1 reserved the name and contains no code.)
 - A receive returns the socket's error when the link goes down or the interface disappears,
   instead of spinning.
 
-[Unreleased]: https://github.com/hupe1980/rawether/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hupe1980/rawether/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hupe1980/rawether/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hupe1980/rawether/releases/tag/v0.1.0

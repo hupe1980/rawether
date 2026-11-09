@@ -18,6 +18,7 @@ On Linux, a rawether socket is an `AF_PACKET`, `SOCK_RAW` socket bound to one in
 | Own transmissions filtered in the kernel (`PACKET_IGNORE_OUTGOING`) | Linux 4.20; older kernels filter by packet type on receive |
 | Launch time (`SO_TXTIME`) | Linux 4.19, and an `etf` or `taprio` qdisc |
 | Hardware timestamps | A NIC that supports them; `CAP_NET_ADMIN` only if it stamps nothing yet |
+| Exact transmit timestamp ids (`SCM_TS_OPT_ID`) | Linux 6.13; older kernels number frames themselves |
 
 ## Kernel facilities by feature
 
@@ -31,6 +32,8 @@ On Linux, a rawether socket is an `AF_PACKET`, `SOCK_RAW` socket bound to one in
 | `priority` | `SO_PRIORITY` |
 | `qdisc_bypass` | `PACKET_QDISC_BYPASS` |
 | `tx_time`, `send_at`, `tx_errors` | `SO_TXTIME`, `SCM_TXTIME`, `MSG_ERRQUEUE` |
+| `tx_timestamping`, `tx_timestamp`, `next_tx_id` | `SOF_TIMESTAMPING_TX_*` with `OPT_ID` and `OPT_TSONLY`, `SCM_TS_OPT_ID`, `MSG_ERRQUEUE` |
+| `timestamp_info` | `SIOCETHTOOL` / `ETHTOOL_GET_TS_INFO`, unprivileged |
 | `send_batch` | `sendmmsg` |
 | `stats` | `PACKET_STATISTICS` |
 | `drop_capabilities` | `PR_CAP_AMBIENT`, `PR_CAPBSET_DROP`, `capset`, `PR_SET_NO_NEW_PRIVS`, then a check of every thread in `/proc/self/task` |

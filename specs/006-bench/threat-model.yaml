@@ -1,0 +1,142 @@
+otmVersion: 0.2.0
+project:
+  id: 006-bench
+  name: Published benchmarks
+threatspec:
+  actors:
+  - id: actor.maintainer
+    name: The maintainer publishing numbers
+    trust: trusted
+  - id: actor.reader
+    name: A reader comparing libraries
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: credential-theft
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: 'no network-boundary surface: the harness runs locally'
+    technique: data-tampering-in-transit
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: data-tampering-at-rest
+  - disposition: no-threat-detected
+    reason: 'checked: the page publishes CPU, kernel and date only'
+    technique: sensitive-data-exposure
+  - disposition: not-applicable
+    reason: no shared-tenant surface
+    technique: cross-tenant-leak
+  - disposition: no-threat-detected
+    reason: 'checked: bounded frame counts, run on demand only'
+    technique: resource-exhaustion
+  - disposition: not-applicable
+    reason: no authorization surface
+    technique: broken-access-control
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  - disposition: no-threat-detected
+    reason: 'checked: the harness parses only its own frames'' payloads'
+    technique: injection
+  exclusions: []
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T14:11:05Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 5485930dff5fdfa17a3e60240ac418a42bead4005797e8fce75b71c002299521
+  - path: spec.md
+    sha256: 1b49148cfc7b33961a99445b69ff5ac3cc58e1bdb8f6974d1c7d196c1906b6bd
+  surfaces:
+  - external-input
+  version: '0.1'
+trustZones:
+- id: tz.site
+  name: The published website
+  risk:
+    trustRating: 5
+assets:
+- id: asset.published-claims
+  name: The truth of published performance numbers
+  risk:
+    availability: 10
+    confidentiality: 0
+    integrity: 80
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-1
+    classification: public
+components:
+- id: component.bench
+  name: Benchmark harness and performance page
+  type: library
+  parent:
+    trustZone: tz.site
+  attributes:
+    source: spec.md#FR-001
+dataflows:
+- id: flow.numbers
+  name: Harness output published to readers
+  source: component.bench
+  destination: actor.reader
+  assets:
+  - asset.published-claims
+  attributes:
+    crosses:
+    - tz.site
+threats:
+- id: threat.misleading-numbers
+  name: Published numbers cannot be traced to a run or a method, or compare libraries unfairly, misleading readers
+  categories:
+  - Repudiation
+  cwes:
+  - CWE-684
+  risk:
+    impact: 50
+    likelihood: 40
+  attributes:
+    source: spec.md#SC-002
+    assets:
+    - asset.published-claims
+    status: open
+    actor: actor.maintainer
+    disposition: threat
+    elements:
+    - component.bench
+    - flow.numbers
+    profile: stride
+    severity: medium
+    technique: missing-audit-trail
+mitigations:
+- id: mitigation.recorded-runs
+  name: The page states the date, kernel, CPU, command and method; the same sender and traffic for every receiver;
+    loss reported
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.misleading-numbers
+    status: required
+    kind: detective
+    requirements:
+    - SR-001
+    touchpoints:
+    - bench/src/main.rs
+    - site/content/docs/performance.md
+requirements:
+- id: SR-001
+  statement: Every published number MUST come from a recorded harness run whose date, environment, command and method
+    are on the page, with the same sender and traffic for every receiver.
+  priority: P2
+  mitigations:
+  - mitigation.recorded-runs
+  acceptance:
+  - given: the performance page
+    then: every number matches the recorded run, and the method lists sender, traffic and filters per receiver
+    when: it is reviewed against the harness output
+  tasks: []
+verification: []
+decisions: []
