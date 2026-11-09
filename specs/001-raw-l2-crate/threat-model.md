@@ -1,6 +1,6 @@
 # Threat Model: rawether 0.1.0 — raw layer-2 Ethernet I/O
 
-**Feature**: `001-raw-l2-crate` · **Generated**: 2026-11-09T10:13:03Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
+**Feature**: `001-raw-l2-crate` · **Generated**: 2026-11-09T10:46:44Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
 
 > Rendered by ThreatSpec. Edit `threat-model.yaml`, not this file.
 
@@ -8,7 +8,7 @@
 
 | Threats | Critical | High | Medium | Low | Needs clarification | Not applicable | Mitigations | Requirements | Decisions |
 |---|---|---|---|---|---|---|---|---|---|
-| 9 | 0 | 2 | 5 | 2 | 0 | 5 | 9 | 9 | 0 |
+| 9 | 0 | 2 | 5 | 2 | 0 | 5 | 9 | 9 | 1 |
 
 ## Actors
 
@@ -91,7 +91,7 @@ flowchart LR
 | `threat.ring-exhaustion` | A peer floods the segment so the ring fills and frames are dropped without the caller being able to tell | Denial of Service | resource-exhaustion | **medium** | mitigated | `mitigation.bounded-buffers-and-counted-drops` |  | spec.md#Edge-Cases |
 | `threat.ring-offsets-out-of-bounds` | Offsets in a ring block (kernel bug, version mismatch, or a block read while the kernel owns it) make the backend form a slice outside the mapping | Tampering | injection | **medium** | mitigated | `mitigation.checked-ring-walk` |  | research.md#Ring-walk-TPACKET_V3 |
 | `threat.unfiltered-window` | Frames arrive between bind and filter attach, or a user BPF program the kernel would reject is accepted, so the caller sees traffic its filter excludes | Tampering | injection | **medium** | mitigated | `mitigation.filter-before-bind` |  | research.md#Linux-open-sequence |
-| `threat.launch-time-abuse` | Launch times far in the future, or sends without a txtime qdisc, hold or silently drop frames on the egress queue | Denial of Service | resource-exhaustion | **low** | open | `mitigation.txtime-opt-in-and-reported` |  | research.md#Transmit |
+| `threat.launch-time-abuse` | Launch times far in the future, or sends without a txtime qdisc, hold or silently drop frames on the egress queue | Denial of Service | resource-exhaustion | **low** | accepted (until 2026-12-31) | `mitigation.txtime-opt-in-and-reported` |  | research.md#Transmit |
 | `threat.promiscuous-disclosure` | Promiscuous or all-multicast mode left on by default exposes other hosts' traffic to the caller | Information Disclosure | sensitive-data-exposure | **low** | mitigated | `mitigation.explicit-promiscuity` |  | spec.md#FR-002 |
 
 ### Techniques evaluated without findings
@@ -130,6 +130,7 @@ The ring walker MUST NOT form a slice outside the block, and MUST NOT read a blo
 - Mitigations: `mitigation.checked-ring-walk`
 - Tasks: T006 ✓, T012 ✓
 - Verification `verification.sr-001.2026-11-09`: test → pass (verified) — `src/ring.rs::tests::offsets_that_point_outside_the_block_end_the_walk`
+- Verification `verification.sr-001.2026-11-09-2`: test → pass (verified) — `src/ring.rs::tests::offsets_that_point_outside_the_block_end_the_walk`
 
 ### SR-002 (P1) — verified
 
@@ -139,6 +140,7 @@ A received Packet MUST borrow the Socket so that no further receive, and no bloc
 - Mitigations: `mitigation.borrowed-packets`
 - Tasks: T010 ✓, T012 ✓
 - Verification `verification.sr-002.2026-11-09`: test → pass (verified) — `src/lib.rs::Socket::recv (compile_fail doctest)`
+- Verification `verification.sr-002.2026-11-09-2`: test → pass (verified) — `src/lib.rs::Socket::recv (compile_fail doctest)`
 
 ### SR-003 (P1) — verified
 
@@ -148,6 +150,7 @@ VLAN re-insertion and length reporting MUST be total over every input: no panic,
 - Mitigations: `mitigation.bounded-frame-handling`
 - Tasks: T007 ✓
 - Verification `verification.sr-003.2026-11-09`: test → pass (verified) — `src/vlan.rs::tests::reinsertion_is_total_over_small_inputs`
+- Verification `verification.sr-003.2026-11-09-2`: test → pass (verified) — `src/vlan.rs::tests::reinsertion_is_total_over_small_inputs; tests/veth.rs::a_short_snap_length_marks_the_frame_truncated_with_its_wire_length`
 
 ### SR-004 (P2) — verified
 
@@ -158,6 +161,7 @@ The Linux backend MUST attach the filter before binding, and Program::new MUST r
 - Mitigations: `mitigation.filter-before-bind`
 - Tasks: T005 ✓, T008 ✓, T011 ✓
 - Verification `verification.sr-004.2026-11-09`: test → pass (verified) — `tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp`
+- Verification `verification.sr-004.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp`
 
 ### SR-005 (P1) — verified
 
@@ -167,6 +171,7 @@ rawether MUST offer drop_capabilities() that leaves the process with no effectiv
 - Mitigations: `mitigation.drop-capabilities`
 - Tasks: T010 ✓, T011 ✓
 - Verification `verification.sr-005.2026-11-09`: test → pass (verified) — `tests/veth.rs::dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening`
+- Verification `verification.sr-005.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening`
 
 ### SR-006 (P1) — verified
 
@@ -176,6 +181,7 @@ Every descriptor rawether opens MUST be close-on-exec.
 - Mitigations: `mitigation.close-on-exec`
 - Tasks: T008 ✓, T009 ✓, T011 ✓
 - Verification `verification.sr-006.2026-11-09`: test → pass (verified) — `tests/veth.rs::every_descriptor_is_close_on_exec`
+- Verification `verification.sr-006.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::every_descriptor_is_close_on_exec`
 
 ### SR-007 (P2) — verified
 
@@ -185,6 +191,7 @@ A default Config MUST NOT enable promiscuous or all-multicast mode.
 - Mitigations: `mitigation.explicit-promiscuity`
 - Tasks: T004 ✓
 - Verification `verification.sr-007.2026-11-09`: test → pass (verified) — `src/lib.rs::tests::the_default_configuration_is_neither_promiscuous_nor_all_multicast`
+- Verification `verification.sr-007.2026-11-09-2`: test → pass (verified) — `src/lib.rs::tests::the_default_configuration_is_neither_promiscuous_nor_all_multicast`
 
 ### SR-008 (P2) — verified
 
@@ -194,6 +201,7 @@ stats() MUST report kernel drops so that received plus dropped equals what passe
 - Mitigations: `mitigation.bounded-buffers-and-counted-drops`
 - Tasks: T013 ✓, T014 ✓
 - Verification `verification.sr-008.2026-11-09`: test → pass (verified) — `tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped`
+- Verification `verification.sr-008.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped`
 
 ### SR-009 (P2) — has-evidence
 
@@ -204,3 +212,10 @@ send_at MUST fail with InvalidInput unless Config::tx_time was set, and tx_error
 - Mitigations: `mitigation.txtime-opt-in-and-reported`
 - Tasks: T013 ✓, T014 ✓, T020
 - Verification `verification.sr-009.2026-11-09`: review → inconclusive (implemented-unverified) — `src/sys/linux.rs:send_at`
+- Verification `verification.sr-009.2026-11-09-2`: review → inconclusive (implemented-unverified) — `src/sys/linux.rs:send_at`
+
+## Risk Decisions
+
+| ID | Threat | Status | Owner | Expires | Rationale |
+|---|---|---|---|---|---|
+| `decision.etf-half-runs-in-ci` | `threat.launch-time-abuse` | accepted | @hupe1980 | 2026-12-31 | SR-009 scenario 1 (send_at refused without tx_time) is verified on a real kernel. Scenario 2 needs the sch_etf qdisc, which the local Docker kernel lacks; the test exists, skips there by name, and runs in the ubuntu-24.04 CI lane on every push. The residual risk is a launch-time frame dropped without being counted, which only affects callers who opt into SO_TXTIME. |

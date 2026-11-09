@@ -1,7 +1,7 @@
 {
   "feature": "001-raw-l2-crate",
-  "commit": "0c1eb6b",
-  "timestamp": "2026-11-09T10:16:23Z",
+  "commit": "744622f",
+  "timestamp": "2026-11-09T10:46:52Z",
   "status": "NOT CONVERGED",
   "threats": {
     "total": 9,
@@ -27,10 +27,10 @@
   },
   "expired_decisions": [],
   "drift": [],
-  "appended_tasks": [
-    "T020"
+  "appended_tasks": [],
+  "already_open_tasks_for": [
+    "SR-009"
   ],
-  "already_open_tasks_for": [],
   "verdicts": {
     "SR-001": {
       "verdict": "verified",
@@ -47,8 +47,8 @@
     "SR-003": {
       "verdict": "verified",
       "method": "test",
-      "evidence": "src/vlan.rs::tests::reinsertion_is_total_over_small_inputs",
-      "justification": "Exhaustive over buffers up to 24 octets and every start/length: either the tag lands inside the buffer with the rest intact or the buffer is untouched; no panic. tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp asserts wire length equals captured length and the tag position on real frames, on both receive paths."
+      "evidence": "src/vlan.rs::tests::reinsertion_is_total_over_small_inputs; tests/veth.rs::a_short_snap_length_marks_the_frame_truncated_with_its_wire_length",
+      "justification": "Exhaustive over buffers up to 24 octets and every start/length: either the tag lands inside the buffer with the rest intact or the buffer is untouched; no panic. tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp asserts wire length equals captured length and the tag position on real frames, on both receive paths. A filter returning a 20-octet snap length yields data of 20 and a wire length of 60, flagged truncated, on the ring and the plain path."
     },
     "SR-004": {
       "verdict": "verified",
@@ -78,7 +78,7 @@
       "verdict": "verified",
       "method": "test",
       "evidence": "tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped",
-      "justification": "100000 frames sent in batches; received plus stats().dropped equals 100000 and stats().received equals the frames seen, on both receive paths."
+      "justification": "100000 frames sent in batches; received plus stats().dropped equals 100000 and stats().received equals the frames seen, on both receive paths. Sparse traffic is kept: 50 frames 3 ms apart all wait in the ring while the reader is busy (sparse_frames_wait_in_the_ring_while_the_reader_is_busy)."
     },
     "SR-009": {
       "verdict": "implemented-unverified",
