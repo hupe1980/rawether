@@ -1,0 +1,52 @@
+# Coverage-guided fuzzing of rawether's parsers (cargo-fuzz, nightly):
+#   cargo +nightly fuzz run frame_view -- -max_total_time=60
+# Not part of the published crate.
+[package]
+name = "rawether-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rawether = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "frame_view"
+path = "fuzz_targets/frame_view.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bpf_program"
+path = "fuzz_targets/bpf_program.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ring_walk"
+path = "fuzz_targets/ring_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bpf_record"
+path = "fuzz_targets/bpf_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vlan_reinsert"
+path = "fuzz_targets/vlan_reinsert.rs"
+test = false
+doc = false
+bench = false

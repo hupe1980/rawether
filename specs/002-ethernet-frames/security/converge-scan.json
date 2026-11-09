@@ -1,0 +1,382 @@
+{
+  "feature": "002-ethernet-frames",
+  "commit": "61e3733",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "Taking an Ethernet view MUST NOT panic for any byte slice, and MUST return no view when the slice is shorter than the header it announces.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "every byte slice up to 24 octets with each tag identifier at offsets 12 and 16",
+          "then": "it returns without panicking, and returns a view only when the announced header fits",
+          "when": "a view is taken"
+        },
+        {
+          "given": "randomised byte slices up to 1600 octets",
+          "then": "nothing panics and the payload lies inside the slice",
+          "when": "a view is taken and every field and the payload are read"
+        }
+      ],
+      "mitigations": [
+        "mitigation.total-view"
+      ],
+      "tasks": [
+        {
+          "id": "T004",
+          "done": true,
+          "text": "[US1] [SR-001] [SR-002] src/frame.rs: `Frame<'a>` (`Copy`) with `new` (None if `len < 14`, or `< 14 + 4 \u00d7 tags` for each announced tag; at most two tags, TPIDs 0x8100/0x88A8 only, in any order; a third TPID is reported as the EtherType), `destination`, `source`, `vlan_tags` (outer first), `ethertype`, `header_len`, `payload`, `as_bytes`. Read only through `get`/checked slices, with no indexing that can panic"
+        },
+        {
+          "id": "T007",
+          "done": true,
+          "text": "[US1] [SR-001] src/frame.rs tests: exhaustive over every slice length 0..=24 with 0x8100/0x88A8/other at offsets 12 and 16 (no panic; a view exactly when the announced header fits), plus a fixed-seed xorshift run of 100 000 slices up to 1600 octets that reads every accessor and checks the payload lies inside the slice"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          },
+          {
+            "path": "src/packet.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "For every set S containing no tag identifier (0x8100, 0x88A8) and every frame that Program::ethertypes(S) accepts, the view's EtherType MUST be in S, using the same tag identifiers (0x8100, 0x88A8) and the same depth (two tags).",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "frames with zero, one, two and three tags of either identifier",
+          "then": "whenever the filter accepts, the view's EtherType is in S",
+          "when": "the filter for a set S is run through Program::run and the view is taken"
+        }
+      ],
+      "mitigations": [
+        "mitigation.shared-tag-rules"
+      ],
+      "tasks": [
+        {
+          "id": "T004",
+          "done": true,
+          "text": "[US1] [SR-001] [SR-002] src/frame.rs: `Frame<'a>` (`Copy`) with `new` (None if `len < 14`, or `< 14 + 4 \u00d7 tags` for each announced tag; at most two tags, TPIDs 0x8100/0x88A8 only, in any order; a third TPID is reported as the EtherType), `destination`, `source`, `vlan_tags` (outer first), `ethertype`, `header_len`, `payload`, `as_bytes`. Read only through `get`/checked slices, with no indexing that can panic"
+        },
+        {
+          "id": "T008",
+          "done": true,
+          "text": "[US1] [SR-002] src/frame.rs tests: for frames with 0\u20133 tags of either TPID and sets S without a TPID, whenever `Program::ethertypes(S).run(frame) != 0` then `Frame::new(frame).ethertype()` is in S, and vice versa for the inner type"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/bpf.rs",
+            "exists": true
+          },
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-003",
+      "statement": "Making a VLAN tag from fields MUST fail for a VID above 4095 or a PCP above 7.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "VID 4096 or PCP 8",
+          "then": "it is refused",
+          "when": "a tag is made from fields"
+        },
+        {
+          "given": "VID 4095, PCP 7, DEI set",
+          "then": "the wire TCI is 0xFFFF",
+          "when": "a tag is made and written"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-tag-fields"
+      ],
+      "tasks": [
+        {
+          "id": "T002",
+          "done": true,
+          "text": "[P] [SR-003] src/frame.rs: `TagKind { Customer, Service }` with `tpid()` (0x8100, 0x88A8, plus a private `from_tpid`); `VlanTag` with `new(kind, pcp, dei, vid) -> io::Result` (\"refuses a PCP above 7 or a VID above 4095\" with `InvalidInput` naming the field and limit; \"VID 0 and 4095 accepted\"), `from_tci` (any `u16`), `kind`/`tci`/`pcp`/`dei`/`vid`; unit tests: limits, the TCI bit layout (`pcp << 13 | dei << 12 | vid`), and VID 4095 + PCP 7 + DEI = TCI 0xFFFF"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-004",
+      "statement": "Building a frame MUST leave the growable buffer, or the returned prefix of a fixed slice, holding exactly the new frame, with any padding zero, whatever the buffer held before; a fixed slice too small MUST yield an error, not a partial frame.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a buffer filled with 1518 octets of 0xAA",
+          "then": "the buffer is 60 octets long and octets 19 to 59 are zero",
+          "when": "a frame with a 5-octet payload is built into it"
+        },
+        {
+          "given": "a fixed 1518-octet slice filled with 0xAA",
+          "then": "the returned length is 60 and octets 19 to 59 of the slice are zero",
+          "when": "a frame with a 5-octet payload is written into it"
+        },
+        {
+          "given": "a fixed slice shorter than the frame",
+          "then": "an error names the size needed and no length is returned",
+          "when": "a frame is written into it"
+        }
+      ],
+      "mitigations": [
+        "mitigation.replace-and-zero-pad"
+      ],
+      "tasks": [
+        {
+          "id": "T010",
+          "done": true,
+          "text": "[US2] [SR-004] src/frame.rs: `FrameBuilder` (`Copy`, `#[must_use]`) with `new(dst, src, ethertype)`, `vlan(tag)` and `vlans(outer, inner)` (each replaces the tags set before), `header_len`, `frame_len(payload_len)` = `max(header_len + payload_len, 60)`, a private `fill(&self, out: &mut [u8], payload)` that writes exactly `frame_len` octets and zero padding, `write(&mut Vec<u8>, payload)` (clear, `resize(frame_len, 0)`, fill; no allocation within capacity), and `write_into(&mut [u8], payload) -> io::Result<usize>` (`InvalidInput` naming the size needed when too small, without writing)"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US2] [SR-004] src/frame.rs tests: a `Vec` prefilled with 1518 \u00d7 0xAA and a 5-octet payload gives 60 octets with octets 19..60 zero; the same for `write_into` on a 1518-octet slice (returns 60, `buf[19..60]` zero); a too-small slice gives `InvalidInput` and leaves the slice unchanged"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-005",
+      "statement": "Building a reply MUST NOT produce a frame when the received frame's source address is a group (multicast or broadcast) address.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a received frame whose source is ff:ff:ff:ff:ff:ff or 01:00:5e:00:00:01",
+          "then": "none is built",
+          "when": "a reply is requested"
+        }
+      ],
+      "mitigations": [
+        "mitigation.no-reply-to-groups"
+      ],
+      "tasks": [
+        {
+          "id": "T014",
+          "done": true,
+          "text": "[US3] [SR-005] src/frame.rs: `Frame::reply(&self, from: MacAddr) -> Option<FrameBuilder>`: destination = `self.source()`, source = `from`, same tags and EtherType; `None` when `self.source().is_multicast()` (the group bit, which also covers broadcast)"
+        },
+        {
+          "id": "T015",
+          "done": true,
+          "text": "[US3] [SR-005] src/frame.rs tests: replies to an untagged and to a VID 100 frame (addresses, tags, EtherType, payload); `None` for sources ff:ff:ff:ff:ff:ff and 01:00:5e:00:00:01"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "examples/echo.rs",
+            "exists": true
+          },
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-006",
+      "statement": "The view's documentation MUST state that a truncated packet's payload covers only the captured octets and point to Packet::is_truncated.",
+      "priority": "P3",
+      "acceptance": [
+        {
+          "given": "the rustdoc of the payload accessor and of Packet's view accessor",
+          "then": "it names is_truncated",
+          "when": "it is read"
+        }
+      ],
+      "mitigations": [
+        "mitigation.truncation-visible"
+      ],
+      "tasks": [
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[US1] [SR-006] src/frame.rs: rustdoc on `Frame` and `payload` saying that the payload includes padding, that for a truncated packet it covers only the captured octets (see `Packet::is_truncated`), and that values below 0x0600 are 802.3 lengths, reported unchanged"
+        },
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[US1] [SR-006] src/packet.rs: `Packet::frame(&self) -> Option<Frame<'a>>`, with rustdoc pointing to `is_truncated`"
+        },
+        {
+          "id": "T021",
+          "done": true,
+          "text": "[P] [US4] [SR-006] site/content/docs/receiving.md (\"Reading the header\" section with `Frame`, padding and truncation notes), site/content/docs/sending.md (builder, `write` vs `write_into`, reply), site/content/docs/getting-started.md (receive and send snippets), site/content/_index.md (hero example), site/content/docs/filtering.md (view and filter agree on tags)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "site/content/docs/receiving.md",
+            "exists": true
+          },
+          {
+            "path": "src/frame.rs",
+            "exists": true
+          },
+          {
+            "path": "src/packet.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.reply-reflection",
+    "threat.stale-buffer-disclosure",
+    "threat.tag-field-truncation",
+    "threat.truncated-payload-misread",
+    "threat.view-filter-disagreement",
+    "threat.view-panic-on-hostile-frame"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-003",
+      "summary": "Requirement 'SR-003' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-004",
+      "summary": "Requirement 'SR-004' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-005",
+      "summary": "Requirement 'SR-005' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-006",
+      "summary": "Requirement 'SR-006' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 6,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 6
+    },
+    "threats_by_severity": {
+      "medium": 3,
+      "low": 1,
+      "high": 1,
+      "critical": 1
+    },
+    "mitigations": 6,
+    "requirements": 6,
+    "requirements_with_tasks": 6,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "high": 2,
+      "medium": 4
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

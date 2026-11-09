@@ -1,0 +1,129 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token; no job uses secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MSRV: "1.88"
+
+jobs:
+  gates:
+    name: gates (fmt, lint on 5 targets, doc, deny, msrv, package, planning paths, workflows)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt \
+            --target aarch64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-pc-windows-gnu,x86_64-unknown-freebsd,i686-unknown-linux-gnu
+          rustup toolchain install "$MSRV" --profile minimal
+          rustup default stable
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: just,cargo-deny
+      - run: just fmt-check lint doc deny msrv package planning-paths workflows
+
+  linux:
+    name: tests and the veth suite (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      # A veth pair, both receive paths, the launch-time test on the runner's own kernel
+      # (which has sch_etf), and the steady-state allocation gate.
+      - run: scripts/veth-test.sh
+        env:
+          RAWETHER_REQUIRE_ETF: "1"
+
+  macos:
+    name: tests (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      # With access to the BPF devices, the loopback test opens one instead of checking the error.
+      - run: sudo -E env "PATH=$PATH" cargo test --lib the_loopback_interface
+
+  windows:
+    name: build (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+
+  freebsd:
+    name: tests (FreeBSD 14, VM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "14"
+          usesh: true
+          prepare: pkg install -y rust
+          # Unit tests, the BPF record layouts against FreeBSD's own header, and a build of the backend.
+          run: cargo test
+
+  miri:
+    name: miri (pure modules)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install nightly --profile minimal --component miri && rustup default nightly
+      - run: cargo miri test --lib
+
+  fuzz:
+    name: fuzz (60 s per target)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install nightly --profile minimal && rustup default nightly
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          for t in $(cargo fuzz list); do
+            cargo fuzz run --target x86_64-unknown-linux-gnu "$t" -- -max_total_time=60
+          done

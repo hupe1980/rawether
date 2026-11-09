@@ -1,0 +1,531 @@
+otmVersion: 0.2.0
+project:
+  id: 002-ethernet-frames
+  name: Ethernet frame views and frame building
+threatspec:
+  actors:
+  - id: actor.caller
+    name: The application using rawether
+    trust: trusted
+  - id: actor.segment-peer
+    name: Any device or attacker able to put frames on the link
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: 'no authentication surface: the view and builder handle no credentials'
+    technique: credential-theft
+  - disposition: no-threat-detected
+    reason: 'checked the view: it reports the source address as received and claims no sender identity; spoofed
+      sources are out of scope (THREAT_MODEL.md, frame authenticity) — the reply helper''s use of that address is
+      modelled as threat.reply-reflection'
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: 'no persistent-store surface: nothing is stored'
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: 'no audit-relevant surface: pure functions over byte slices'
+    technique: missing-audit-trail
+  - disposition: not-applicable
+    reason: no shared-tenant surface
+    technique: cross-tenant-leak
+  - disposition: not-applicable
+    reason: 'no authorization surface: the view and builder need no privilege and open nothing (FR-009)'
+    technique: broken-access-control
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  exclusions:
+  - entity: VLAN tag
+    reason: 'a value inside a frame, not a separate asset: its integrity is part of asset.outgoing-frames (threat.tag-field-truncation)
+      and asset.frame-interpretation (threat.view-filter-disagreement)'
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T11:28:40Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: a9d7161a4929561734b878f4bb30c3579fad3bf74c48f09786c95bc58c162d4e
+  - path: spec.md
+    sha256: b0e5dd6971d89129885f0d2f9713ccc03ff6d7261b0701ae82e4dce609b0beb6
+  surfaces:
+  - external-input
+  - network-boundary
+  version: '0.1'
+trustZones:
+- id: tz.link
+  name: The Ethernet segment (unauthenticated)
+  risk:
+    trustRating: 1
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.frame-interpretation
+  name: 'The caller''s reading of a frame: addresses, VLAN, EtherType and payload boundaries'
+  risk:
+    availability: 40
+    confidentiality: 20
+    integrity: 85
+  attributes:
+    type: business-data
+    source: spec.md#FR-001
+    classification: internal
+- id: asset.link-traffic
+  name: Other hosts' traffic and capacity on the segment
+  risk:
+    availability: 70
+    confidentiality: 30
+    integrity: 50
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-3
+    classification: internal
+- id: asset.outgoing-frames
+  name: Frames the caller builds and sends, including bytes of earlier frames left in a reused buffer
+  risk:
+    availability: 30
+    confidentiality: 70
+    integrity: 80
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-2
+    classification: internal
+- id: asset.process-availability
+  name: The caller's process staying up while it handles frames from the link
+  risk:
+    availability: 90
+    confidentiality: 0
+    integrity: 40
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-1
+    classification: internal
+components:
+- id: component.bpf-ethertype-filter
+  name: The existing EtherType filter (Program::ethertypes) that admits frames the view then reads
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#Edge-Cases
+- id: component.frame-builder
+  name: Frame builder writing into a caller buffer
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-005
+- id: component.frame-view
+  name: Ethernet view over a byte slice or Packet
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: plan.md#Source-Code
+- id: component.reply-helper
+  name: Reply builder for a viewed frame
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-008
+dataflows:
+- id: flow.builder-to-link
+  name: A built frame is sent onto the link
+  source: component.frame-builder
+  destination: tz.link
+  assets:
+  - asset.outgoing-frames
+  attributes:
+    crosses:
+    - tz.process
+    - tz.link
+- id: flow.received-frame-to-view
+  name: A received frame from the link is read through the view
+  source: actor.segment-peer
+  destination: component.frame-view
+  assets:
+  - asset.frame-interpretation
+  - asset.process-availability
+  attributes:
+    crosses:
+    - tz.link
+    - tz.process
+- id: flow.reply-to-link
+  name: A reply built from a received frame's source address is sent onto the link
+  source: component.reply-helper
+  destination: tz.link
+  assets:
+  - asset.link-traffic
+  - asset.outgoing-frames
+  attributes:
+    crosses:
+    - tz.process
+    - tz.link
+threats:
+- id: threat.reply-reflection
+  name: A peer sends a frame with a group (multicast or broadcast) source address and the reply helper answers to
+    that group, turning one frame into a segment-wide reply storm
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-406
+  risk:
+    impact: 60
+    likelihood: 50
+  attributes:
+    source: spec.md#User-Story-3
+    assets:
+    - asset.link-traffic
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.reply-helper
+    - flow.reply-to-link
+    profile: stride
+    severity: medium
+    technique: resource-exhaustion
+- id: threat.stale-buffer-disclosure
+  name: Building a short frame into a buffer reused from a longer one leaves earlier frame bytes in the padding,
+    disclosing them on the link
+  categories:
+  - Information Disclosure
+  cwes:
+  - CWE-226
+  - CWE-212
+  risk:
+    impact: 60
+    likelihood: 50
+  attributes:
+    source: spec.md#User-Story-2
+    assets:
+    - asset.outgoing-frames
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.frame-builder
+    - flow.builder-to-link
+    profile: stride
+    severity: medium
+    technique: sensitive-data-exposure
+- id: threat.tag-field-truncation
+  name: A VLAN id or priority out of range is silently masked when building, so the caller's frame lands in a different
+    VLAN or traffic class than intended
+  categories:
+  - Tampering
+  cwes:
+  - CWE-197
+  - CWE-20
+  risk:
+    impact: 60
+    likelihood: 40
+  attributes:
+    source: spec.md#User-Story-2
+    assets:
+    - asset.outgoing-frames
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.frame-builder
+    - flow.builder-to-link
+    profile: stride
+    severity: medium
+    technique: data-tampering-in-transit
+- id: threat.truncated-payload-misread
+  name: The caller treats the view's payload of a truncated packet as the whole payload and acts on a partial frame
+  categories:
+  - Tampering
+  cwes:
+  - CWE-130
+  risk:
+    impact: 40
+    likelihood: 30
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.frame-interpretation
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.frame-view
+    profile: stride
+    severity: low
+    technique: injection
+- id: threat.view-filter-disagreement
+  name: The view and the kernel EtherType filter disagree about tags, so a peer's crafted frame passes the filter
+    for one EtherType while the caller reads another type or the wrong payload boundary
+  categories:
+  - Tampering
+  cwes:
+  - CWE-436
+  - CWE-20
+  risk:
+    impact: 70
+    likelihood: 40
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.frame-interpretation
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.frame-view
+    - component.bpf-ethertype-filter
+    profile: stride
+    severity: high
+    technique: injection
+- id: threat.view-panic-on-hostile-frame
+  name: A link peer sends a frame shorter than the header it announces (or with crafted tags) and the view panics,
+    taking down the caller's receive loop
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-125
+  - CWE-248
+  risk:
+    impact: 70
+    likelihood: 70
+  attributes:
+    source: spec.md#User-Story-1
+    assets:
+    - asset.process-availability
+    status: mitigated
+    actor: actor.segment-peer
+    constitution: VI. Errors say what to do — never a panic
+    disposition: threat
+    elements:
+    - component.frame-view
+    - flow.received-frame-to-view
+    profile: stride
+    severity: critical
+    technique: resource-exhaustion
+mitigations:
+- id: mitigation.checked-tag-fields
+  name: Tags made from fields refuse out-of-range VID and PCP instead of masking them
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.tag-field-truncation
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-003
+    touchpoints:
+    - src/frame.rs
+- id: mitigation.no-reply-to-groups
+  name: The reply helper builds nothing when the received frame's source is a group address
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.reply-reflection
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-005
+    touchpoints:
+    - src/frame.rs
+    - examples/echo.rs
+- id: mitigation.replace-and-zero-pad
+  name: The builder replaces the buffer's contents and pads with zeros, never with what the buffer held
+  riskReduction: 95
+  attributes:
+    threats:
+    - threat.stale-buffer-disclosure
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-004
+    touchpoints:
+    - src/frame.rs
+- id: mitigation.shared-tag-rules
+  name: The view recognises exactly the tag identifiers and depth the EtherType filter looks through (0x8100, 0x88A8;
+    two tags)
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.view-filter-disagreement
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/frame.rs
+    - src/bpf.rs
+- id: mitigation.total-view
+  name: The view checks every length before reading and returns no view for a slice shorter than the header it announces
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.view-panic-on-hostile-frame
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/frame.rs
+    - src/packet.rs
+- id: mitigation.truncation-visible
+  name: The view of a truncated packet is documented as covering captured octets only, next to Packet::is_truncated
+  riskReduction: 50
+  attributes:
+    threats:
+    - threat.truncated-payload-misread
+    status: verified
+    kind: detective
+    requirements:
+    - SR-006
+    touchpoints:
+    - src/frame.rs
+    - src/packet.rs
+    - site/content/docs/receiving.md
+requirements:
+- id: SR-001
+  statement: Taking an Ethernet view MUST NOT panic for any byte slice, and MUST return no view when the slice is
+    shorter than the header it announces.
+  priority: P1
+  mitigations:
+  - mitigation.total-view
+  acceptance:
+  - given: every byte slice up to 24 octets with each tag identifier at offsets 12 and 16
+    then: it returns without panicking, and returns a view only when the announced header fits
+    when: a view is taken
+  - given: randomised byte slices up to 1600 octets
+    then: nothing panics and the payload lies inside the slice
+    when: a view is taken and every field and the payload are read
+  tasks: []
+- id: SR-002
+  statement: For every set S containing no tag identifier (0x8100, 0x88A8) and every frame that Program::ethertypes(S)
+    accepts, the view's EtherType MUST be in S, using the same tag identifiers (0x8100, 0x88A8) and the same depth
+    (two tags).
+  priority: P1
+  mitigations:
+  - mitigation.shared-tag-rules
+  acceptance:
+  - given: frames with zero, one, two and three tags of either identifier
+    then: whenever the filter accepts, the view's EtherType is in S
+    when: the filter for a set S is run through Program::run and the view is taken
+  tasks: []
+- id: SR-003
+  statement: Making a VLAN tag from fields MUST fail for a VID above 4095 or a PCP above 7.
+  priority: P2
+  mitigations:
+  - mitigation.checked-tag-fields
+  acceptance:
+  - given: VID 4096 or PCP 8
+    then: it is refused
+    when: a tag is made from fields
+  - given: VID 4095, PCP 7, DEI set
+    then: the wire TCI is 0xFFFF
+    when: a tag is made and written
+  tasks: []
+- id: SR-004
+  statement: Building a frame MUST leave the growable buffer, or the returned prefix of a fixed slice, holding exactly
+    the new frame, with any padding zero, whatever the buffer held before; a fixed slice too small MUST yield an
+    error, not a partial frame.
+  priority: P2
+  mitigations:
+  - mitigation.replace-and-zero-pad
+  acceptance:
+  - given: a buffer filled with 1518 octets of 0xAA
+    then: the buffer is 60 octets long and octets 19 to 59 are zero
+    when: a frame with a 5-octet payload is built into it
+  - given: a fixed 1518-octet slice filled with 0xAA
+    then: the returned length is 60 and octets 19 to 59 of the slice are zero
+    when: a frame with a 5-octet payload is written into it
+  - given: a fixed slice shorter than the frame
+    then: an error names the size needed and no length is returned
+    when: a frame is written into it
+  tasks: []
+- id: SR-005
+  statement: Building a reply MUST NOT produce a frame when the received frame's source address is a group (multicast
+    or broadcast) address.
+  priority: P2
+  mitigations:
+  - mitigation.no-reply-to-groups
+  acceptance:
+  - given: a received frame whose source is ff:ff:ff:ff:ff:ff or 01:00:5e:00:00:01
+    then: none is built
+    when: a reply is requested
+  tasks: []
+- id: SR-006
+  statement: The view's documentation MUST state that a truncated packet's payload covers only the captured octets
+    and point to Packet::is_truncated.
+  priority: P3
+  mitigations:
+  - mitigation.truncation-visible
+  acceptance:
+  - given: the rustdoc of the payload accessor and of Packet's view accessor
+    then: it names is_truncated
+    when: it is read
+  tasks: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: src/frame.rs::tests::a_view_is_total_over_small_inputs; src/frame.rs::tests::a_view_never_panics_on_random_frames
+  result: pass
+  verdict: verified
+  justification: Every slice 0..=24 octets with each TPID/other word at offsets 12 and 16 is viewed and asserted
+    to have a view exactly when 14 + 4 x tags fits; 100 000 random slices up to 1600 octets read every accessor
+    and assert the payload lies inside the slice. Both pass (cargo test, 2026-11-09).
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: src/frame.rs::tests::the_view_and_the_ethertype_filter_agree
+  result: pass
+  verdict: verified
+  justification: For three TPID-free sets and every layout of 0-3 tags of either TPID with four inner types, asserts
+    Program::ethertypes(S).run(frame) != 0 exactly when the view's EtherType is in S. Passes.
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+- id: verification.sr-003.2026-11-09
+  requirement: SR-003
+  method: test
+  evidence: src/frame.rs::tests::a_tag_refuses_out_of_range_fields_and_lays_out_its_tci
+  result: pass
+  verdict: verified
+  justification: Asserts VlanTag::new refuses PCP 8 and VID 4096, and that VID 4095 + PCP 7 + DEI gives TCI 0xFFFF.
+    Passes.
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+- id: verification.sr-004.2026-11-09
+  requirement: SR-004
+  method: test
+  evidence: src/frame.rs::tests::building_replaces_the_buffer_and_pads_with_zeros
+  result: pass
+  verdict: verified
+  justification: A Vec and a fixed 1518-octet slice prefilled with 0xAA receive a 5-octet-payload frame; asserts
+    length 60, octets 19..60 zero, nothing written past the frame, and a 59-octet slice yields InvalidInput naming
+    60 with the slice untouched. Passes.
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+- id: verification.sr-005.2026-11-09
+  requirement: SR-005
+  method: test
+  evidence: src/frame.rs::tests::a_reply_goes_back_to_the_sender_and_never_to_a_group
+  result: pass
+  verdict: verified
+  justification: Asserts reply() is None for sources ff:ff:ff:ff:ff:ff and 01:00:5e:00:00:01, and that a unicast-sourced
+    tagged frame gets a reply to its sender with the same tags and EtherType. Passes.
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+- id: verification.sr-006.2026-11-09
+  requirement: SR-006
+  method: review
+  evidence: src/frame.rs (Frame::payload rustdoc); src/packet.rs (Packet::frame rustdoc); site/content/docs/receiving.md#reading-the-header
+  result: pass
+  verdict: verified
+  justification: The rustdoc of Frame::payload and Packet::frame both name Packet::is_truncated and say a truncated
+    packet's payload is the captured part only; the receiving guide says the same. Acceptance is a documentation
+    read, satisfied by review.
+  verified_at: '2026-11-09T11:35:03Z'
+  commit: 61e3733
+decisions: []

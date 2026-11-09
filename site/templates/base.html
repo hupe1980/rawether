@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="{{ lang | default(value='en') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- if page -%}
+    {%- set entry = page -%}
+  {%- elif section -%}
+    {%- set entry = section -%}
+  {%- endif -%}
+  {%- if current_path == "/" or not entry -%}
+    {%- set page_title = config.title -%}
+  {%- elif entry.extra.seo_title -%}
+    {%- set page_title = entry.extra.seo_title -%}
+  {%- else -%}
+    {%- set page_title = entry.title ~ " · rawether docs" -%}
+  {%- endif -%}
+  {%- if entry and entry.description -%}
+    {%- set page_description = entry.description -%}
+  {%- else -%}
+    {%- set page_description = config.description -%}
+  {%- endif -%}
+  {%- set canonical = current_url | default(value=config.base_url ~ "/") -%}
+  <title>{% block title %}{{ page_title }}{% endblock %}</title>
+  <meta name="description" content="{{ page_description }}">
+  {% block canonical %}<link rel="canonical" href="{{ canonical | safe }}">{% endblock %}
+  <meta name="author" content="{{ config.extra.author }}">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f9fc" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0e17" media="(prefers-color-scheme: dark)">
+  <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+  <meta property="og:site_name" content="rawether">
+  <meta property="og:locale" content="en">
+  <meta property="og:title" content="{{ page_title }}">
+  <meta property="og:description" content="{{ page_description }}">
+  <meta property="og:url" content="{{ canonical | safe }}">
+  <meta property="og:image" content="{{ get_url(path=config.extra.og_image) }}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="rawether: raw Ethernet I/O for Rust">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ page_title }}">
+  <meta name="twitter:description" content="{{ page_description }}">
+  <meta name="twitter:image" content="{{ get_url(path=config.extra.og_image) }}">
+  <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{ get_url(path='apple-touch-icon.png') }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css', cachebust=true) }}">
+  {% block head_extra %}{% endblock %}
+  {% block structured_data %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="brand" href="{{ get_url(path='/') }}" aria-label="rawether home">
+        {% include "partials/logo.html" %}
+        <span>rawether</span>
+      </a>
+      <nav class="top-nav" aria-label="Main">
+        <a href="{{ get_url(path='@/docs/_index.md') }}"{% if current_path and current_path is starting_with(pat="/docs") %} aria-current="page"{% endif %}>Docs</a>
+        <a href="{{ get_url(path='@/docs/getting-started.md') }}">Get started</a>
+        <a href="{{ config.extra.docs_rs }}" rel="noopener">API</a>
+        <a href="{{ config.extra.repo }}" rel="noopener">GitHub</a>
+      </nav>
+      <button class="search-open" type="button" aria-label="Search the docs" data-search-open>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span>Search</span><kbd>/</kbd>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-grid">
+      <div>
+        <p class="footer-brand">rawether</p>
+        <p class="muted">Raw layer-2 Ethernet I/O for Rust on Linux, macOS and FreeBSD. Dual-licensed under MIT or Apache-2.0.</p>
+      </div>
+      <nav aria-label="Learn">
+        <p class="footer-head">Learn</p>
+        <a href="{{ get_url(path='@/docs/getting-started.md') }}">Getting started</a>
+        <a href="{{ get_url(path='@/docs/receiving.md') }}">Receiving frames</a>
+        <a href="{{ get_url(path='@/docs/launch-time.md') }}">Launch-time transmission</a>
+        <a href="{{ get_url(path='@/docs/faq.md') }}">FAQ</a>
+      </nav>
+      <nav aria-label="Security">
+        <p class="footer-head">Security</p>
+        <a href="{{ get_url(path='@/docs/threat-model.md') }}">Threat model</a>
+        <a href="{{ get_url(path='@/docs/testing.md') }}">Testing</a>
+        <a href="{{ config.extra.repo }}/security/advisories/new" rel="noopener">Report a vulnerability</a>
+      </nav>
+      <nav aria-label="Project">
+        <p class="footer-head">Project</p>
+        <a href="{{ config.extra.repo }}" rel="noopener">Source on GitHub</a>
+        <a href="{{ config.extra.crate }}" rel="noopener">crates.io</a>
+        <a href="{{ config.extra.docs_rs }}" rel="noopener">docs.rs</a>
+        <a href="{{ config.extra.changelog }}" rel="noopener">Changelog</a>
+      </nav>
+    </div>
+  </footer>
+
+  <div class="search-dialog" role="dialog" aria-modal="true" aria-label="Search the documentation" hidden data-search>
+    <div class="search-panel">
+      <label class="visually-hidden" for="search-input">Search</label>
+      <input id="search-input" type="search" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
+      <ol class="search-results" aria-live="polite"></ol>
+      <p class="search-hint muted"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to open · <kbd>Esc</kbd> to close</p>
+    </div>
+  </div>
+
+  <script src="{{ get_url(path='elasticlunr.min.js') }}" defer></script>
+  <script src="{{ get_url(path='search_index.en.js') }}" defer></script>
+  <script src="{{ get_url(path='app.js', cachebust=true) }}" defer></script>
+</body>
+</html>

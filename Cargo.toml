@@ -1,0 +1,49 @@
+[package]
+name = "rawether"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Raw layer-2 Ethernet I/O: AF_PACKET with TPACKET_V3 rings, hardware timestamps, SO_TXTIME and classic BPF on Linux; BPF devices on macOS and FreeBSD."
+repository = "https://github.com/hupe1980/rawether"
+documentation = "https://docs.rs/rawether"
+homepage = "https://hupe1980.github.io/rawether/"
+readme = "README.md"
+keywords = ["ethernet", "af-packet", "raw-socket", "bpf", "tsn"]
+categories = ["network-programming", "os::linux-apis", "os::macos-apis", "os::freebsd-apis"]
+# The crate is the library, its examples and tests, and the documents a reader of docs.rs needs.
+# The design records and the tooling stay in the repository.
+include = ["/src/**", "/examples/**", "/tests/**", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/THREAT_MODEL.md", "/SECURITY.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+
+[[test]]
+# Runs as its own single-threaded program: libtest's threads would hold capabilities.
+name = "drop_capabilities"
+harness = false
+
+[dependencies]
+libc = "0.2.191"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+panic = "deny"
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+doc_markdown = "allow"
+many_single_char_names = "allow"
+too_many_lines = "allow"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]

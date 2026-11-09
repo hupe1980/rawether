@@ -1,0 +1,69 @@
+installed:
+- threatspec
+settings:
+  auto_execute_hooks: true
+hooks:
+  after_specify:
+  - extension: threatspec
+    command: speckit.threatspec.model
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Generate or update the threat model for this feature?
+    description: 'Threat model from spec.md: assets, actors, trust zones, threats,
+      SR-### requirements'
+    condition: null
+  after_clarify:
+  - extension: threatspec
+    command: speckit.threatspec.model
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: The spec changed. Refresh the threat model?
+    description: Incremental threat-model update after clarifications
+    condition: null
+  after_plan:
+  - extension: threatspec
+    command: speckit.threatspec.model
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Refine the threat model with the plan's components and data flows?
+    description: 'Second pass over plan.md: components, data flows, trust boundaries'
+    condition: null
+  after_tasks:
+  - extension: threatspec
+    command: speckit.threatspec.check
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Check that every security requirement has a task?
+    description: 'Gap check: threats → mitigations → SR-### → tasks'
+    condition: null
+  before_implement:
+  - extension: threatspec
+    command: speckit.threatspec.check
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Run the security gap check before implementing?
+    description: Blocks on CRITICAL findings when enforcement is strict
+    condition: null
+  after_implement:
+  - extension: threatspec
+    command: speckit.threatspec.converge
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Verify security convergence?
+    description: Evidence-based verification of every SR-###
+    condition: null
+  before_converge:
+  - extension: threatspec
+    command: speckit.threatspec.converge
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Add unmet security requirements as convergence tasks?
+    description: Appends security remediation tasks so core converge picks them up
+    condition: null
