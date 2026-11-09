@@ -119,6 +119,23 @@ impl<'a> Packet<'a> {
         self.timestamp
     }
 
+    /// The frame's Ethernet header and payload, or `None` if fewer octets were captured than
+    /// the header announces. For a truncated packet the payload is the captured part only: see
+    /// [`is_truncated`](Packet::is_truncated).
+    ///
+    /// ```no_run
+    /// # fn f(sock: &mut rawether::Socket) -> std::io::Result<()> {
+    /// if let Some(p) = sock.recv(None)? {
+    ///     if let Some(f) = p.frame() {
+    ///         println!("{} → {} type {:04x}", f.source(), f.destination(), f.ethertype());
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn frame(&self) -> Option<crate::Frame<'a>> {
+        crate::Frame::new(self.data)
+    }
+
     /// Whether an 802.1Q/802.1ad tag the driver had stripped into metadata was put back, so that
     /// `data()` is the frame as it was on the wire.
     pub fn vlan_restored(&self) -> bool {

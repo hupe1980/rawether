@@ -223,7 +223,7 @@ pub(crate) mod tests {
         assert!(cur.next(&blk).is_none());
     }
 
-    /// SR-001.
+    /// Threat model T-01 (SR-001).
     #[test]
     fn a_block_still_owned_by_the_kernel_is_not_read() {
         let mut blk = synthetic_block(4096, &[(&[0u8; 60], 0, None)]);
@@ -231,7 +231,7 @@ pub(crate) mod tests {
         assert!(Cursor::start(&blk).is_none());
     }
 
-    /// SR-001.
+    /// Threat model T-01 (SR-001).
     #[test]
     fn offsets_that_point_outside_the_block_end_the_walk() {
         let mut blk = synthetic_block(4096, &[(&[0u8; 60], 0, None), (&[0u8; 60], 0, None)]);

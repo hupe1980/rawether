@@ -12,7 +12,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use rawether::{Config, MacAddr, RxMode, RxPath, Socket, TimestampSource};
+use rawether::{Config, FrameBuilder, MacAddr, RxMode, RxPath, Socket, TagKind, TimestampSource, VlanTag};
 
 /// Counts allocations so the steady-state loop can be shown to make none.
 struct Counting;
@@ -54,16 +54,12 @@ fn expected_path() -> RxPath {
 }
 
 fn frame(dst: MacAddr, src: MacAddr, ethertype: u16, vlan: Option<u16>, seq: u32) -> Vec<u8> {
-    let mut f = Vec::with_capacity(64);
-    f.extend_from_slice(&dst.0);
-    f.extend_from_slice(&src.0);
+    let mut b = FrameBuilder::new(dst, src, ethertype);
     if let Some(tci) = vlan {
-        f.extend_from_slice(&0x8100u16.to_be_bytes());
-        f.extend_from_slice(&tci.to_be_bytes());
+        b = b.vlan(VlanTag::from_tci(TagKind::Customer, tci));
     }
-    f.extend_from_slice(&ethertype.to_be_bytes());
-    f.extend_from_slice(&seq.to_be_bytes());
-    f.resize(60, 0x5a);
+    let mut f = Vec::with_capacity(64);
+    b.write(&mut f, &seq.to_be_bytes());
     f
 }
 
@@ -75,7 +71,7 @@ fn tx(iface: &str) -> Socket {
     Config::new(iface).ethertypes(&[0xffff]).rx_mode(RxMode::Plain).open().unwrap()
 }
 
-/// SR-003, SR-004: filtered in the kernel, tags as on the wire, lengths reported.
+/// Threat model T-03, T-04 (SR-003, SR-004): filtered in the kernel, tags as on the wire, lengths reported.
 #[test]
 fn only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp() {
     let Some((iface, peer)) = pair() else { return };
@@ -100,6 +96,13 @@ fn only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp() {
     assert_eq!(&p.data()[12..14], &0x8100u16.to_be_bytes(), "the tag is where it was on the wire");
     assert_eq!(&p.data()[14..16], &0x6005u16.to_be_bytes());
     assert_eq!(&p.data()[16..18], &TYPE_A.to_be_bytes());
+    // Spec 002 story 1, scenario 4: the view reports the tag even when the driver stripped it
+    // and rawether put it back.
+    let f = p.frame().expect("a whole header");
+    assert_eq!((f.source(), f.destination(), f.ethertype()), (src, dst, TYPE_A));
+    assert_eq!(f.vlan_tags(), &[VlanTag::from_tci(TagKind::Customer, 0x6005)]);
+    assert_eq!((f.vlan_tags()[0].pcp(), f.vlan_tags()[0].vid()), (3, 5));
+    assert_eq!(&f.payload()[..4], &3u32.to_be_bytes());
     assert_eq!(p.original_len(), p.data().len());
     assert!(r.recv(Some(Duration::from_millis(100))).unwrap().is_none());
 }
@@ -129,7 +132,7 @@ fn a_multicast_group_is_joined_on_the_interface() {
     assert!(table.lines().any(|l| l.contains(&peer) && l.contains(&hex)), "{table}");
 }
 
-/// SR-008: every frame received or counted as dropped.
+/// Threat model T-08 (SR-008): every frame received or counted as dropped.
 #[test]
 fn a_hundred_thousand_frames_are_received_or_counted_as_dropped() {
     const N: u32 = 100_000;
@@ -161,7 +164,9 @@ fn a_hundred_thousand_frames_are_received_or_counted_as_dropped() {
     assert_eq!(stats.received, got);
 }
 
-/// SR-003: a filter that keeps fewer octets than the frame has marks the frame truncated, and the
+/// Threat model T-03 (SR-003).
+///
+/// A filter that keeps fewer octets than the frame has marks the frame truncated, and the
 /// wire length is still the frame's own — on the ring and on the plain path.
 #[test]
 fn a_short_snap_length_marks_the_frame_truncated_with_its_wire_length() {
@@ -182,7 +187,9 @@ fn a_short_snap_length_marks_the_frame_truncated_with_its_wire_length() {
     assert!(p.is_truncated());
 }
 
-/// SR-008: sparse traffic is kept too. At a low rate the kernel retires a block per frame, so
+/// Threat model T-08 (SR-008).
+///
+/// Sparse traffic is kept too. At a low rate the kernel retires a block per frame, so
 /// the ring must have enough blocks to hold frames that arrive while the reader is busy.
 #[test]
 fn sparse_frames_wait_in_the_ring_while_the_reader_is_busy() {
@@ -200,7 +207,7 @@ fn sparse_frames_wait_in_the_ring_while_the_reader_is_busy() {
     assert_eq!(got, 50, "dropped {}", r.stats().unwrap().dropped);
 }
 
-/// SR-009: launch time is opt-in and its drops are reported.
+/// Threat model T-09 (SR-009): launch time is opt-in and its drops are reported.
 #[test]
 fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
     let Some((iface, peer)) = pair() else { return };
@@ -242,7 +249,7 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
     let _ = std::process::Command::new("tc").args(["qdisc", "del", "dev", &iface, "root"]).status();
 }
 
-/// SR-006.
+/// Threat model T-06 (SR-006).
 #[test]
 fn every_descriptor_is_close_on_exec() {
     use std::os::fd::AsRawFd;
@@ -259,16 +266,24 @@ fn the_steady_state_does_not_allocate() {
     let mut r = rx(&peer, &[TYPE_A]);
     let t = tx(&iface);
     let f = frame(r.mac_address(), t.mac_address(), TYPE_A, None, 0);
+    // Spec 002 SC-003: a frame built into one reused buffer for every send.
+    let builder = FrameBuilder::new(r.mac_address(), t.mac_address(), TYPE_A);
+    let mut built = Vec::with_capacity(1518);
     for _ in 0..100 {
         t.send(&f).unwrap();
         while r.recv(Some(Duration::from_millis(20))).unwrap().is_some() {}
     }
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     let mut seen = 0;
-    for _ in 0..1000 {
+    for k in 0..1000u32 {
         t.send(&f).unwrap();
-        if let Some(p) = r.recv(Some(Duration::from_millis(100))).unwrap() {
-            seen += p.data().len();
+        builder.write(&mut built, &k.to_be_bytes());
+        t.send(&built).unwrap();
+        while let Some(p) = r.recv(Some(Duration::from_millis(100))).unwrap() {
+            seen += p.frame().map_or(0, |f| f.payload().len());
+            if p.frame().is_some_and(|f| f.payload().starts_with(&k.to_be_bytes())) {
+                break;
+            }
         }
     }
     let after = ALLOCATIONS.load(Ordering::Relaxed);
@@ -280,7 +295,9 @@ fn the_steady_state_does_not_allocate() {
     }
 }
 
-/// SR-005. Dropping capabilities keeps the open socket and refuses a new one. Runs in a child process,
+/// Threat model T-05 (SR-005).
+///
+/// Dropping capabilities keeps the open socket and refuses a new one. Runs in a child process,
 /// because capabilities cannot be regained.
 #[test]
 fn dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening() {

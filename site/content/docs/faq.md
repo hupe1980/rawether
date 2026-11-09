@@ -1,0 +1,25 @@
++++
+title = "FAQ"
+description = "Common questions about rawether: how it compares with pnet and pcap, running without root, Windows, async, packet parsing, VLANs, PTP, dropped frames and reporting a vulnerability."
+weight = 130
+template = "faq.html"
+
+[extra]
+group = "Help"
+faq = [
+  { id = "what", q = "What is rawether for?", a = "Sending and receiving whole Ethernet frames from Rust, for protocols that run directly on layer 2: PTP, LLDP, TSN streams, PRP/HSR, PROFINET, EtherCAT, IEC 61850 GOOSE and Sampled Values, or your own test traffic. It gives you the frames; parsing them is up to you or another crate." },
+  { id = "alternatives", q = "How does it compare with pnet or the pcap crate?", a = "The `pcap` crate binds libpcap, a C library you need installed, and adds capture files and Windows (Npcap). `pnet` offers a portable data-link layer, including Windows, plus packet parsing. rawether has neither parsing nor Windows support. It is a small, safe wrapper over the kernel interfaces themselves, with only `libc` as a dependency, and it exposes what timing-sensitive protocols need: a zero-copy TPACKET_V3 ring, labelled hardware timestamps, `SO_TXTIME` launch times, VLAN tag restoration and drop counters. Choose by what you need." },
+  { id = "root", q = "Do I need to run as root?", a = "No. On Linux, grant `CAP_NET_RAW` to the binary with `sudo setcap cap_net_raw+ep <binary>`, and call `drop_capabilities()` once your sockets are open. On macOS, give your group access to `/dev/bpf*` (Wireshark's ChmodBPF does this). See [Getting started](@/docs/getting-started.md#get-the-privilege-to-open-a-socket)." },
+  { id = "eperm", q = "Why does open fail with PermissionDenied after every build?", a = "File capabilities belong to the file. `cargo build` writes a new binary, which has none, so run `setcap` again after each build. A small script or a `cargo` runner setting can do it for you." },
+  { id = "windows", q = "Does it support Windows?", a = "No. Windows has no raw layer-2 socket in the base system; it needs a driver such as Npcap. rawether builds on Windows, and `Socket::open` returns `ErrorKind::Unsupported`." },
+  { id = "async", q = "Does it work with tokio or async?", a = "Yes, without an async dependency in rawether. A socket implements `AsFd` and `AsRawFd` and can be non-blocking, so tokio's `AsyncFd`, mio or `poll` can drive it. See [Event loops and async](@/docs/event-loops.md)." },
+  { id = "vlan", q = "Why do I see VLAN tags that tcpdump on Linux does not show?", a = "Many Linux NICs strip the 802.1Q tag into metadata. rawether puts it back by default, so `data()` is the frame as it was on the wire, and `vlan_restored()` tells you. Turn it off with `Config::restore_vlan(false)`." },
+  { id = "drops", q = "I am losing frames. What can I do?", a = "Check `stats().dropped` first. If it grows, the ring is overflowing: give it more blocks (`RxMode::Ring(RingConfig { block_count: 256, .. })`), read on a dedicated thread, or filter more tightly in the kernel. If it stays at zero, the loss is before the socket: look at `ethtool -S` and `/proc/net/softnet_stat`." },
+  { id = "ptp", q = "Can I build a PTP implementation on it?", a = "rawether provides the transport: PTP-over-Ethernet frames (EtherType 0x88F7) with hardware receive timestamps on Linux. It does not yet provide hardware transmit timestamps, which a PTP master or a two-step clock needs, and its hardware timestamping changes the NIC's configuration for every program on the host. Do not run it next to `ptp4l` on the same NIC." },
+  { id = "parse", q = "Does rawether parse frames?", a = "Only the Ethernet header, which is its own layer: `p.frame()` gives you the addresses, VLAN tags, EtherType and payload, and `FrameBuilder` writes them. What follows the EtherType (PTP, LLDP, GOOSE, your protocol) is yours to parse, with your own code or a protocol crate. Treat it as untrusted input: check lengths before indexing." },
+  { id = "stable", q = "Is the API stable?", a = "Not yet. rawether is pre-1.0, so minor versions may change the API. Changes are listed in the [changelog](https://github.com/hupe1980/rawether/blob/main/CHANGELOG.md)." },
+  { id = "report", q = "How do I report a vulnerability?", a = "Privately, through GitHub's [private vulnerability reporting](https://github.com/hupe1980/rawether/security/advisories/new). Include the OS and version, the rawether version, the configuration, and the smallest program and frames that show the problem." },
+]
++++
+
+Short answers, linking to the rest of the documentation. For anything security-relevant, the [threat model](@/docs/threat-model.md) is the reference.

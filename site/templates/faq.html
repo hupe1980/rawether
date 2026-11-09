@@ -1,0 +1,18 @@
+{% extends "doc.html" %}
+{% block faq_data %}
+<script type="application/ld+json">
+{ "@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [
+  {% for item in page.extra.faq %}{ "@type": "Question", "name": {{ item.q | json_encode() | safe }},
+    "acceptedAnswer": { "@type": "Answer", "text": {{ item.a | markdown(inline=true) | striptags | json_encode() | safe }} } }{% if not loop.last %},{% endif %}
+  {% endfor %}] }
+</script>
+{% endblock %}
+{% block body %}
+{{ page.content | safe }}
+<div class="faq">
+{% for item in page.extra.faq %}
+  <h2 id="{{ item.id }}">{{ item.q }}</h2>
+  <p>{{ item.a | markdown(inline=true) | safe }}</p>
+{% endfor %}
+</div>
+{% endblock %}

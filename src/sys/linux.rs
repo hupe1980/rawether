@@ -783,9 +783,9 @@ pub(crate) fn clock_now(clock: Clock) -> io::Result<Duration> {
     Ok(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
 
-/// Clear the effective, permitted and inheritable capability sets of the calling thread's
-/// process. Sockets already open keep working: the kernel checks `CAP_NET_RAW` only at
-/// `socket(2)`.
+/// Clear the effective, permitted and inheritable capability sets of the calling thread (threads
+/// it spawns later inherit them). Sockets already open keep working: the kernel checks
+/// `CAP_NET_RAW` only at `socket(2)`.
 pub(crate) fn drop_capabilities() -> io::Result<()> {
     #[repr(C)]
     struct Header {

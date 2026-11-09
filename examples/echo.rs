@@ -4,7 +4,8 @@
 //! cargo run --example echo -- eth0 88b5
 //! ```
 //!
-//! Frames are answered in batches of up to 32, with one system call per batch on Linux.
+//! Frames are answered in batches of up to 32, with one system call per batch on Linux. A frame
+//! from a group (multicast or broadcast) source address is never answered.
 
 use std::time::Duration;
 
@@ -23,17 +24,13 @@ fn main() -> std::io::Result<()> {
     let mut replies: Vec<Vec<u8>> = (0..32).map(|_| Vec::with_capacity(1518)).collect();
     loop {
         let mut n = 0;
+        let mut wait = Some(Duration::from_secs(1));
         while n < replies.len() {
-            let Some(p) = sock.recv(Some(if n == 0 { Duration::from_secs(1) } else { Duration::ZERO }))?
-            else {
-                break;
-            };
-            let d = p.data();
-            let reply = &mut replies[n];
-            reply.clear();
-            reply.extend_from_slice(&d[6..12]); // back to the sender
-            reply.extend_from_slice(&me.0);
-            reply.extend_from_slice(&d[12..]);
+            let Some(p) = sock.recv(wait)? else { break };
+            wait = Some(Duration::ZERO); // the rest of the batch: only what is already waiting
+            let Some(f) = p.frame() else { continue };
+            let Some(reply) = f.reply(me) else { continue }; // never answer a group address
+            reply.write(&mut replies[n], f.payload());
             n += 1;
         }
         if n > 0 {

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Page not found · rawether{% endblock %}
+{% block canonical %}{% endblock %}
+{% block head_extra %}<meta name="robots" content="noindex">{% endblock %}
+{% block content %}
+<section class="hero hero-small">
+  <div class="wrap narrow">
+    <p class="eyebrow">404</p>
+    <h1>This page is not here.</h1>
+    <p class="lead">It may have moved while the documentation grew. Search the docs, or start from the overview.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
+      <button class="btn btn-ghost" type="button" data-search-open>Search</button>
+    </div>
+  </div>
+</section>
+{% endblock %}

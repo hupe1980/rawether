@@ -24,23 +24,62 @@
 //! // LLDP and PTP frames, VLAN-tagged or not, with timestamps.
 //! let mut sock = rawether::Config::new("eth0").ethertypes(&[0x88cc, 0x88f7]).open()?;
 //! while let Some(p) = sock.recv(Some(Duration::from_secs(1)))? {
-//!     println!("{} octets at {:?}", p.data().len(), p.timestamp());
+//!     let Some(f) = p.frame() else { continue }; // shorter than a header: skip, never panic
+//!     println!("{} sent type {:04x} at {:?}", f.source(), f.ethertype(), p.timestamp());
 //! }
 //! # Ok(()) }
 //! ```
 //!
 //! Receiving hands out a [`Packet`] that borrows the socket's ring or buffer until the next
-//! receive, so a steady-state loop never allocates. Opening needs `CAP_NET_RAW` on Linux and
-//! read/write access to `/dev/bpf*` on the BSDs.
+//! receive, so a steady-state loop never allocates.
+//!
+//! # Frames
+//!
+//! [`Packet::frame`] (or [`Frame::new`] on any byte slice) reads the Ethernet header: addresses,
+//! up to two VLAN tags, the EtherType and the payload, without index arithmetic and without
+//! panicking on a short frame. [`FrameBuilder`] writes a frame into a buffer you reuse, padded
+//! to the Ethernet minimum, and [`Frame::reply`] answers a received one:
+//!
+//! ```no_run
+//! # fn f(sock: &mut rawether::Socket) -> std::io::Result<()> {
+//! let me = sock.mac_address();
+//! let mut buf = Vec::with_capacity(1518);
+//! loop {
+//!     let Some(p) = sock.recv(None)? else { continue };
+//!     let Some(reply) = p.frame().and_then(|f| f.reply(me)) else { continue };
+//!     reply.write(&mut buf, b"pong"); // the builder holds no borrow of the packet
+//!     sock.send(&buf)?;
+//! }
+//! # }
+//! ```
+//!
+//! # Privileges
+//!
+//! Opening a socket needs `CAP_NET_RAW` on Linux and read/write access to `/dev/bpf*` on macOS
+//! and FreeBSD. Grant the capability to the binary (`setcap cap_net_raw+ep`) rather than running
+//! as root, and call [`drop_capabilities`] once every socket is open: the sockets keep working,
+//! and the code that parses untrusted frames no longer holds the privilege.
+//!
+//! # Security
+//!
+//! The [threat model](threat_model) states what rawether defends against (the ring shared with
+//! the kernel, hostile frame shapes, the privilege, descriptor leaks, silent drops), what it
+//! trusts, and the test that guards each claim. Report a vulnerability privately through
+//! [GitHub's private vulnerability reporting](https://github.com/hupe1980/rawether/security/advisories/new).
+//!
+//! More guides, including launch-time transmission, hardware timestamps and event-loop
+//! integration, are on the [rawether website](https://hupe1980.github.io/rawether/).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod bpf;
 mod config;
+pub mod frame;
 mod packet;
 #[cfg(any(target_os = "linux", test))]
 mod ring;
 mod sys;
+pub mod threat_model;
 #[cfg(any(target_os = "linux", test))]
 mod vlan;
 
@@ -48,6 +87,7 @@ use std::io;
 use std::time::Duration;
 
 pub use config::{Clock, Config, Filter, RingConfig, RxMode, Timestamping, TxTime};
+pub use frame::{Frame, FrameBuilder, TagKind, VlanTag};
 pub use packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource};
 
 /// An open raw socket on one interface.
@@ -90,8 +130,8 @@ impl Socket {
     /// Wait for the next frame for at most `timeout` (`None`: indefinitely). `Ok(None)` when the
     /// time ran out, or at once on a non-blocking socket with nothing waiting.
     ///
-    /// The packet borrows the socket (SR-002), so its memory cannot be handed back to the kernel while
-    /// it is in use:
+    /// The packet borrows the socket, so its memory cannot be handed back to the kernel while it
+    /// is in use (threat model T-02, SR-002):
     ///
     /// ```compile_fail
     /// # fn f(sock: &mut rawether::Socket) -> std::io::Result<()> {
@@ -164,12 +204,15 @@ impl std::os::fd::AsRawFd for Socket {
 
 /// Give up the privilege that opening a socket needed, keeping every socket already open.
 ///
-/// On Linux this clears the process's effective, permitted and inheritable capability sets
-/// (so `CAP_NET_RAW` is gone) and sets `no_new_privs`, so no later `exec` regains privilege;
-/// sockets keep working because the kernel checks the capability only when one is created.
-/// Call it after opening every socket and before handling the first frame. On the BSDs the
-/// privilege is access to `/dev/bpf*`, which an open descriptor already holds, and this does
-/// nothing. A process running as root keeps its user id: drop that separately.
+/// On Linux this clears the calling thread's effective, permitted and inheritable capability
+/// sets (so `CAP_NET_RAW` is gone) and sets `no_new_privs`, so no later `exec` regains
+/// privilege. Sockets keep working because the kernel checks the capability only when one is
+/// created. Capabilities are per thread: call this after opening every socket and before
+/// spawning threads or handling the first frame; threads spawned later inherit the empty sets.
+///
+/// On macOS and FreeBSD the privilege is access to `/dev/bpf*`, which an open descriptor already
+/// holds, and this does nothing. A process running as root keeps its user id: drop that
+/// separately.
 pub fn drop_capabilities() -> io::Result<()> {
     sys::drop_capabilities()
 }
@@ -219,7 +262,7 @@ mod tests {
         }
     }
 
-    /// SR-007.
+    /// Threat model T-07 (SR-007).
     #[test]
     fn the_default_configuration_is_neither_promiscuous_nor_all_multicast() {
         let c = Config::new("eth0");

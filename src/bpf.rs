@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(p.run(&[]), 0);
     }
 
-    /// SR-004.
+    /// Threat model T-04 (SR-004).
     #[test]
     fn the_builder_refuses_what_the_kernel_would() {
         assert!(Program::ethertypes(&[]).is_err());

@@ -34,6 +34,7 @@ doc:
     @echo "==> gate: doc"
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --target aarch64-unknown-linux-gnu
+    test -f target/aarch64-unknown-linux-gnu/doc/rawether/threat_model/index.html
 
 deny:
     @echo "==> gate: deny"
@@ -49,6 +50,11 @@ package:
     cargo package --allow-dirty --list | grep -qx THREAT_MODEL.md || { echo "THREAT_MODEL.md is not in the package" >&2; exit 1; }
     ! cargo package --allow-dirty --list | grep -E '^(specs|\.specify|\.claude|concepts)/'
     cargo publish --dry-run --allow-dirty
+
+# The website: internal links resolve, external ones are reported, and it builds.
+site:
+    @echo "==> gate: site"
+    cd site && zola check && zola build
 
 # The kernel suite on a veth pair, natively (Linux, sudo) or in Docker.
 veth:
@@ -67,7 +73,7 @@ planning-paths:
     if grep -rnE '(concepts|specs|\.specify)/' src examples tests Cargo.toml deny.toml; then
         echo "planning paths in the crate" >&2; status=1
     fi
-    if grep -rnE 'concepts[/]' README.md SECURITY.md THREAT_MODEL.md justfile .github; then
+    if grep -rnE 'concepts[/]' README.md SECURITY.md THREAT_MODEL.md CHANGELOG.md site justfile .github; then
         echo "private notes cited in the published tree" >&2; status=1
     fi
     if [[ -d specs ]] && grep -rnE --exclude='incoming-*' 'concept[s]/|/Users/|/home/[a-z]|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}' specs .specify/memory; then

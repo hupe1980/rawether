@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "Raw layer-2 Ethernet I/O: AF_PACKET with TPACKET_V3 rings, hardware timestamps, SO_TXTIME and classic BPF on Linux; BPF devices on macOS and the BSDs."
 repository = "https://github.com/hupe1980/rawether"
 documentation = "https://docs.rs/rawether"
+homepage = "https://hupe1980.github.io/rawether/"
 readme = "README.md"
 keywords = ["ethernet", "af-packet", "raw-socket", "bpf", "tsn"]
 categories = ["network-programming", "os::linux-apis", "os::macos-apis"]

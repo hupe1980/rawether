@@ -1,0 +1,37 @@
+verdicts:
+  - requirement: SR-001
+    verdict: verified
+    method: test
+    evidence: src/frame.rs::tests::a_view_is_total_over_small_inputs; src/frame.rs::tests::a_view_never_panics_on_random_frames
+    result: pass
+    justification: Every slice 0..=24 octets with each TPID/other word at offsets 12 and 16 is viewed and asserted to have a view exactly when 14 + 4 x tags fits; 100 000 random slices up to 1600 octets read every accessor and assert the payload lies inside the slice. Both pass (cargo test, 2026-11-09).
+  - requirement: SR-002
+    verdict: verified
+    method: test
+    evidence: src/frame.rs::tests::the_view_and_the_ethertype_filter_agree
+    result: pass
+    justification: For three TPID-free sets and every layout of 0-3 tags of either TPID with four inner types, asserts Program::ethertypes(S).run(frame) != 0 exactly when the view's EtherType is in S. Passes.
+  - requirement: SR-003
+    verdict: verified
+    method: test
+    evidence: src/frame.rs::tests::a_tag_refuses_out_of_range_fields_and_lays_out_its_tci
+    result: pass
+    justification: Asserts VlanTag::new refuses PCP 8 and VID 4096, and that VID 4095 + PCP 7 + DEI gives TCI 0xFFFF. Passes.
+  - requirement: SR-004
+    verdict: verified
+    method: test
+    evidence: src/frame.rs::tests::building_replaces_the_buffer_and_pads_with_zeros
+    result: pass
+    justification: A Vec and a fixed 1518-octet slice prefilled with 0xAA receive a 5-octet-payload frame; asserts length 60, octets 19..60 zero, nothing written past the frame, and a 59-octet slice yields InvalidInput naming 60 with the slice untouched. Passes.
+  - requirement: SR-005
+    verdict: verified
+    method: test
+    evidence: src/frame.rs::tests::a_reply_goes_back_to_the_sender_and_never_to_a_group
+    result: pass
+    justification: Asserts reply() is None for sources ff:ff:ff:ff:ff:ff and 01:00:5e:00:00:01, and that a unicast-sourced tagged frame gets a reply to its sender with the same tags and EtherType. Passes.
+  - requirement: SR-006
+    verdict: verified
+    method: review
+    evidence: src/frame.rs (Frame::payload rustdoc); src/packet.rs (Packet::frame rustdoc); site/content/docs/receiving.md#reading-the-header
+    result: pass
+    justification: The rustdoc of Frame::payload and Packet::frame both name Packet::is_truncated and say a truncated packet's payload is the captured part only; the receiving guide says the same. Acceptance is a documentation read, satisfied by review.

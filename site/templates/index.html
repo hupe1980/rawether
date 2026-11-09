@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block body_class %}home{% endblock %}
+{% block structured_data %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    { "@type": "WebSite", "name": "rawether", "url": {{ get_url(path="/") | json_encode() | safe }}, "inLanguage": "en" },
+    { "@type": "SoftwareSourceCode",
+      "name": "rawether",
+      "description": {{ config.description | json_encode() | safe }},
+      "url": {{ get_url(path="/") | json_encode() | safe }},
+      "codeRepository": {{ config.extra.repo | json_encode() | safe }},
+      "programmingLanguage": { "@type": "ComputerLanguage", "name": "Rust" },
+      "runtimePlatform": ["Linux", "macOS", "FreeBSD"],
+      "license": ["https://spdx.org/licenses/MIT.html", "https://spdx.org/licenses/Apache-2.0.html"],
+      "author": { "@type": "Person", "name": {{ config.extra.author | json_encode() | safe }}, "url": "https://github.com/hupe1980" },
+      "keywords": "raw socket, Ethernet, layer 2, AF_PACKET, TPACKET_V3, BPF, packet capture, PTP, LLDP, TSN, SO_TXTIME, hardware timestamps, Rust",
+      "sameAs": [{{ config.extra.crate | json_encode() | safe }}, {{ config.extra.docs_rs | json_encode() | safe }}] }
+  ]
+}
+</script>
+{% endblock %}
+{% block content %}
+<section class="hero" aria-labelledby="hero-title">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Rust crate · Linux, macOS, FreeBSD · pre-1.0</p>
+      <h1 id="hero-title">Raw Ethernet frames in Rust, filtered and timestamped by the kernel.</h1>
+      <p class="lead">rawether sends and receives whole layer-2 frames on a named interface. On Linux it uses AF_PACKET with a zero-copy TPACKET_V3 ring, in-kernel BPF filters, hardware timestamps and <code>SO_TXTIME</code> launch times. On macOS and FreeBSD it uses BPF devices. One small, safe API, and one dependency: <code>libc</code>.</p>
+      <div class="install" aria-label="Install">
+        <pre><code>cargo add rawether</code></pre>
+      </div>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="{{ get_url(path='@/docs/getting-started.md') }}">Get started</a>
+        <a class="btn btn-ghost" href="{{ config.extra.docs_rs }}" rel="noopener">API reference</a>
+        <a class="btn btn-ghost" href="{{ config.extra.repo }}" rel="noopener">GitHub</a>
+      </div>
+    </div>
+    <div class="hero-code" aria-label="Example">
+      {{ section.content | safe }}
+    </div>
+  </div>
+</section>
+
+<section class="band protocols" aria-labelledby="below-ip-title">
+  <div class="wrap">
+    <h2 id="below-ip-title" class="section-title">For everything below IP</h2>
+    <p class="section-lead">Protocols that have no port number and live directly on Ethernet: time synchronisation, discovery, redundancy, industrial and automotive buses, and your own test traffic.</p>
+    <ul class="chips" aria-label="Example protocols">
+      <li><strong>PTP</strong><span>IEEE 1588 · 0x88F7</span></li>
+      <li><strong>LLDP</strong><span>IEEE 802.1AB · 0x88CC</span></li>
+      <li><strong>TSN</strong><span>802.1Qbv · etf · taprio</span></li>
+      <li><strong>PRP / HSR</strong><span>IEC 62439-3</span></li>
+      <li><strong>PROFINET</strong><span>RT · 0x8892</span></li>
+      <li><strong>EtherCAT</strong><span>0x88A4</span></li>
+      <li><strong>IEC 61850</strong><span>GOOSE · Sampled Values</span></li>
+      <li><strong>Custom</strong><span>0x88B5 · 0x88B6</span></li>
+    </ul>
+  </div>
+</section>
+
+<section aria-labelledby="path-title">
+  <div class="wrap">
+    <h2 id="path-title" class="section-title">How a frame reaches you</h2>
+    <p class="section-lead">rawether hands the work to the kernel. Unwanted frames never leave it, wanted ones are read in place from memory shared with the kernel, and every frame records whose clock stamped it.</p>
+    <ol class="pipeline">
+      <li><span class="step">1</span><strong>Wire and NIC</strong><small>The NIC stamps the frame on its own clock, if it has hardware timestamping.</small></li>
+      <li><span class="step">2</span><strong>Classic BPF filter</strong><small>Your EtherTypes, tagged or not, are checked in the kernel. Anything else is discarded there.</small></li>
+      <li><span class="step">3</span><strong>TPACKET_V3 ring</strong><small>The frame is written into memory shared with your process, with the VLAN tag the driver stripped put back.</small></li>
+      <li><span class="step">4</span><strong><code>Packet&lt;'_&gt;</code></strong><small>A borrowed view into the ring with its lengths and timestamp. The compiler ends the borrow before the memory goes back to the kernel.</small></li>
+    </ol>
+    <p class="muted small">On Linux, as shown. When the kernel refuses the ring, rawether uses <code>recvmsg</code> and says which path it is on. On macOS and FreeBSD the filter runs on the BPF device and frames arrive in a read buffer. See <a href="{{ get_url(path='@/docs/how-it-works.md') }}">How it works</a>.</p>
+  </div>
+</section>
+
+<section class="band" aria-labelledby="why-title">
+  <div class="wrap">
+    <h2 id="why-title" class="section-title">Why rawether</h2>
+    <p class="section-lead">The kernel features that make raw Ethernet fast and precise, behind an API that is hard to misuse.</p>
+    <div class="cards">
+      <article class="card">
+        <h3>Filtered in the kernel</h3>
+        <p>An EtherType set, untagged, 802.1Q, 802.1ad or double-tagged, compiles to classic BPF. The filter is attached <em>before</em> the socket is bound, so no unwanted frame is ever queued. You can also bring your own program and test it without a kernel.</p>
+        <a href="{{ get_url(path='@/docs/filtering.md') }}">Filtering frames</a>
+      </article>
+      <article class="card">
+        <h3>Zero-copy receive</h3>
+        <p>A TPACKET_V3 ring hands out frames borrowed from shared memory. The borrow ends at the next receive, enforced by the compiler, and the steady-state loop makes no allocations.</p>
+        <a href="{{ get_url(path='@/docs/receiving.md') }}">Receiving frames</a>
+      </article>
+      <article class="card">
+        <h3>Timestamps that say whose they are</h3>
+        <p>Every frame records which clock stamped it: the NIC's (hardware), the kernel's (software), or rawether's own read for the few frames the kernel did not stamp.</p>
+        <a href="{{ get_url(path='@/docs/timestamps.md') }}">Timestamps</a>
+      </article>
+      <article class="card">
+        <h3>VLAN tags as on the wire</h3>
+        <p>Many drivers strip the 802.1Q tag into metadata. rawether puts it back in place, in head-room the ring reserves, so your parser sees the frame as it was sent.</p>
+        <a href="{{ get_url(path='@/docs/receiving.md#vlan-tags') }}">VLAN tags</a>
+      </article>
+      <article class="card">
+        <h3>Frames without index arithmetic</h3>
+        <p><code>p.frame()</code> gives you the addresses, up to two VLAN tags, the EtherType and the payload, and returns nothing instead of panicking on a short frame. <code>FrameBuilder</code> writes frames into a reused buffer, padded to the minimum.</p>
+        <a href="{{ get_url(path='@/docs/receiving.md#reading-the-header') }}">Reading the header</a>
+      </article>
+      <article class="card">
+        <h3>Batched and timed send</h3>
+        <p><code>sendmmsg</code> sends up to 64 frames per system call. <code>SO_TXTIME</code> launch times feed <code>etf</code> and <code>taprio</code>, and missed deadlines are counted, not lost silently.</p>
+        <a href="{{ get_url(path='@/docs/launch-time.md') }}">Launch-time transmission</a>
+      </article>
+      <article class="card">
+        <h3>Drops are counted</h3>
+        <p><code>stats()</code> keeps a running total of the kernel's received and dropped counters, so a full ring shows up as a number instead of a silent gap.</p>
+        <a href="{{ get_url(path='@/docs/receiving.md#drops') }}">Counting drops</a>
+      </article>
+      <article class="card">
+        <h3>Any event loop</h3>
+        <p><code>AsFd</code> and <code>AsRawFd</code>, non-blocking mode, timed and blocking receive. Plugs into <code>poll</code>, mio or tokio without an async dependency in the crate.</p>
+        <a href="{{ get_url(path='@/docs/event-loops.md') }}">Event loops and async</a>
+      </article>
+      <article class="card">
+        <h3>Least privilege</h3>
+        <p>Grant <code>CAP_NET_RAW</code> to the binary, not root. Call <code>drop_capabilities()</code> once the sockets are open, and every descriptor is close-on-exec.</p>
+        <a href="{{ get_url(path='@/docs/threat-model.md') }}">Threat model</a>
+      </article>
+      <article class="card">
+        <h3>Tested on a real kernel</h3>
+        <p>Every claim about kernel behaviour is checked against a veth pair in CI, on both receive paths, including drops under load and a counting allocator for the steady state.</p>
+        <a href="{{ get_url(path='@/docs/testing.md') }}">Testing</a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="matrix-title">
+  <div class="wrap">
+    <h2 id="matrix-title" class="section-title">Platforms</h2>
+    <p class="section-lead">The same API on every Unix rawether supports. A request a platform cannot honour, such as a launch time on macOS, is refused with an error instead of being quietly dropped.</p>
+    <div class="table-wrap">
+      <table class="matrix">
+        <caption class="visually-hidden">What rawether uses on each platform</caption>
+        <thead><tr><th scope="col">Feature</th><th scope="col">Linux (AF_PACKET)</th><th scope="col">macOS, FreeBSD (BPF)</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">EtherType and custom BPF filters</th><td>In the kernel</td><td>In the kernel</td></tr>
+          <tr><th scope="row">Receive</th><td>TPACKET_V3 ring, <code>recvmsg</code> fallback</td><td>BPF read buffer</td></tr>
+          <tr><th scope="row">Timestamps</th><td>Hardware or software, labelled</td><td>Software</td></tr>
+          <tr><th scope="row">Multicast, promiscuous</th><td>Membership, all-multicast, promiscuous</td><td>Membership, promiscuous (covers all-multicast)</td></tr>
+          <tr><th scope="row">Batched send</th><td><code>sendmmsg</code></td><td>One write per frame</td></tr>
+          <tr><th scope="row">Launch time, priority, qdisc bypass</th><td><code>SO_TXTIME</code>, <code>SO_PRIORITY</code>, <code>PACKET_QDISC_BYPASS</code></td><td>Launch time refused; the others ignored</td></tr>
+          <tr><th scope="row">Drop counters</th><td><code>PACKET_STATISTICS</code></td><td><code>BIOCGSTATS</code></td></tr>
+          <tr><th scope="row">Privilege</th><td><code>CAP_NET_RAW</code>, dropped after opening</td><td>Read/write access to <code>/dev/bpf*</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted small">Linux 3.2 or later for the ring and 4.19 or later for <code>SO_TXTIME</code>. Rust 1.88 or later. Other platforms compile, and <code>Socket::open</code> returns <code>ErrorKind::Unsupported</code>. Details: <a href="{{ get_url(path='@/docs/linux.md') }}">Linux</a>, <a href="{{ get_url(path='@/docs/macos-freebsd.md') }}">macOS and FreeBSD</a>.</p>
+  </div>
+</section>
+
+<section class="band" aria-labelledby="scope-title">
+  <div class="wrap two-col">
+    <div>
+      <h2 id="scope-title" class="section-title">What it is not</h2>
+      <p>rawether moves frames. It does not parse protocols, authenticate senders, or capture to pcap files. Layer 2 has no sender identity, so a frame can claim any source address. Use the protocol's own security (MACsec, IEC 62351-6, PTP authentication TLVs) where that matters.</p>
+      <p>It does not support Windows. If you need Windows, or a packet-parsing toolkit, the <a href="{{ get_url(path='@/docs/faq.md#alternatives') }}">FAQ</a> compares the alternatives. The <a href="{{ get_url(path='@/docs/threat-model.md') }}">threat model</a> lists what rawether defends against and the test that guards each claim.</p>
+      <p class="status-note"><strong>Status:</strong> pre-1.0. The API may change between minor versions.</p>
+    </div>
+    <div>
+      <h2 class="section-title">Links</h2>
+      <ul class="link-list">
+        <li><a href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a><span>Guides, platforms, security</span></li>
+        <li><a href="{{ config.extra.docs_rs }}" rel="noopener">docs.rs</a><span>API reference</span></li>
+        <li><a href="{{ config.extra.crate }}" rel="noopener">crates.io</a><span>The crate</span></li>
+        <li><a href="{{ config.extra.repo }}" rel="noopener">GitHub</a><span>Source, issues, examples</span></li>
+        <li><a href="{{ config.extra.repo }}/tree/main/specs" rel="noopener">Design records</a><span>The spec, threat model and verification of each change</span></li>
+        <li><a href="{{ config.extra.security }}" rel="noopener">Security policy</a><span>Report a vulnerability privately</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+{% endblock %}

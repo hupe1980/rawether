@@ -3,6 +3,7 @@
 [![CI](https://github.com/hupe1980/rawether/actions/workflows/ci.yml/badge.svg)](https://github.com/hupe1980/rawether/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/rawether.svg)](https://crates.io/crates/rawether)
 [![docs.rs](https://img.shields.io/docsrs/rawether)](https://docs.rs/rawether)
+[![Website](https://img.shields.io/badge/docs-website-2457d6)](https://hupe1980.github.io/rawether/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
 🔌 **Raw layer-2 Ethernet I/O for Rust.** Send and receive whole Ethernet frames on a named
@@ -26,11 +27,26 @@ let mut sock = rawether::Config::new("eth0")
     .open()?;
 rawether::drop_capabilities()?;            // CAP_NET_RAW is no longer needed
 
+// Receive until a second passes without a frame.
 while let Some(p) = sock.recv(Some(Duration::from_secs(1)))? {
-    println!("{} octets, {:?}", p.data().len(), p.timestamp());
+    let Some(f) = p.frame() else { continue };    // too short for a header: skip, never panic
+    println!("{} sent {:04x} at {:?}", f.source(), f.ethertype(), p.timestamp());
 }
 ```
 
+Sending is the other half: describe the header once and write frames into a buffer you reuse.
+
+```rust
+use rawether::{FrameBuilder, MacAddr};
+
+let mut buf = Vec::with_capacity(1518);
+FrameBuilder::new(MacAddr::BROADCAST, sock.mac_address(), 0x88b5)
+    .write(&mut buf, b"hello, layer 2");                // header, payload, padded to 60 octets
+sock.send(&buf)?;
+```
+
+📖 [Documentation](https://hupe1980.github.io/rawether/) ·
+📚 [API reference](https://docs.rs/rawether) ·
 🔐 [Threat model](THREAT_MODEL.md) ·
 📐 [Design records](https://github.com/hupe1980/rawether/blob/main/specs/README.md) ·
 📝 [Changelog](CHANGELOG.md) ·
@@ -51,6 +67,9 @@ while let Some(p) = sock.recv(Some(Duration::from_secs(1)))? {
   each labelled.
 - 🏷️ **VLAN tags as on the wire.** A tag the driver stripped into metadata is put back in place,
   using head-room the ring reserves.
+- 🧩 **Frames without index arithmetic.** `p.frame()` names the addresses, up to two VLAN tags
+  (PCP, DEI, VID), the EtherType and the payload, and never panics on a short frame.
+  `FrameBuilder` writes frames into a reused buffer, padded to the minimum; `reply` answers one.
 - 🚀 **Batched and timed send.** `sendmmsg` batches; `SO_TXTIME` launch times for `etf`/`taprio`;
   `SO_PRIORITY`; optional qdisc bypass.
 - 📊 **Drops are counted.** `stats()` accumulates the kernel's received and dropped counters.
@@ -102,7 +121,11 @@ On Linux, grant the capability to the binary instead of running it as root:
 just ci                      # fmt, clippy, tests, docs, cargo-deny, MSRV, package
 scripts/veth-test.sh          # the kernel suite on a veth pair (Linux, sudo)
 scripts/veth-test.sh --docker # the same from any host with Docker
+just site                     # check and build the website (needs Zola)
 ```
+
+The website's sources are in [`site/`](site); it is built with [Zola](https://www.getzola.org/)
+and deployed to GitHub Pages from `main`.
 
 ## License
 

@@ -27,17 +27,17 @@ fn main() -> std::io::Result<()> {
     eprintln!("{} ({}), receive path {:?}", sock.interface(), sock.mac_address(), sock.rx_path());
     loop {
         let Some(p) = sock.recv(Some(Duration::from_secs(1)))? else { continue };
-        let d = p.data();
-        if d.len() < 14 {
-            continue;
-        }
-        let ethertype = u16::from_be_bytes([d[12], d[13]]);
+        // A frame shorter than its header has no view: skip it rather than index into it.
+        let Some(f) = p.frame() else { continue };
         let when =
             p.timestamp().map_or_else(String::new, |t| format!("{}.{:09} {:?}", t.secs, t.nanos, t.source));
+        print!("{when}  {} → {}", f.source(), f.destination());
+        for tag in f.vlan_tags() {
+            print!("  vlan {}", tag.vid());
+        }
         println!(
-            "{when}  {} → {}  type {ethertype:04x}  {} octets{}",
-            rawether::MacAddr([d[6], d[7], d[8], d[9], d[10], d[11]]),
-            rawether::MacAddr([d[0], d[1], d[2], d[3], d[4], d[5]]),
+            "  type {:04x}  {} octets{}",
+            f.ethertype(),
             p.original_len(),
             if p.is_truncated() { " (truncated)" } else { "" },
         );

@@ -6,6 +6,26 @@ All notable changes to rawether are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Frame`: a panic-free view of a frame's Ethernet header (destination, source, up to two
+  802.1Q/802.1ad tags, EtherType, payload), over any byte slice or through `Packet::frame()`.
+  It steps over the same tags as the EtherType filter.
+- `FrameBuilder`: writes destination, source, optional tags, EtherType and payload into a reused
+  `Vec` (`write`) or a fixed slice (`write_into`), zero-padded to `frame::MIN_FRAME_LEN` (60).
+- `Frame::reply`: the header of an answer to a received frame; `None` for a group source address.
+- `VlanTag` and `TagKind`, with range-checked PCP and VID.
+- The examples and guides read and build frames through these instead of index arithmetic.
+- Threat model classes T-10 (replies to group addresses) and T-11 (stale bytes in reused
+  buffers); T-03 covers the header view.
+
+- The threat model is rendered on docs.rs as the `rawether::threat_model` module.
+- A website with guides and the API overview: <https://hupe1980.github.io/rawether/>.
+
+### Changed
+
+- `drop_capabilities` documents that Linux capabilities are per thread.
+
 ## [0.1.0] - 2026-11-09
 
 First release. (0.0.1 reserved the name and contains no code.)

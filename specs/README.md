@@ -7,8 +7,9 @@ directory holds the record of each change, one numbered folder per change, writt
 
 These are **records of each change as it was made**: the state, the numbers and the open items
 are those of that day. What rawether promises today is in the [README](../README.md), the
-[threat model](../THREAT_MODEL.md) and the [API documentation](https://docs.rs/rawether). Where
-a record and those documents differ, the documents are right.
+[threat model](../THREAT_MODEL.md), the [API documentation](https://docs.rs/rawether) and the
+[website](https://hupe1980.github.io/rawether/). Where a record and those documents differ, the
+documents are right.
 
 ## What a record holds
 
@@ -50,3 +51,9 @@ never by the documentation alone.
 | Record | Change |
 |---|---|
 | [001-raw-l2-crate](001-raw-l2-crate/spec.md) | rawether 0.1.0 — raw layer-2 Ethernet I/O |
+
+### Unreleased
+
+| Record | Change |
+|---|---|
+| [002-ethernet-frames](002-ethernet-frames/spec.md) | Ethernet frame views (`Frame`), frame building (`FrameBuilder`) and replies |

@@ -39,7 +39,9 @@ mod tests {
         assert_eq!(&buf[s..s + l], &expect[..]);
     }
 
-    /// SR-003. Every buffer up to 24 octets, every start and length: re-insertion either succeeds inside
+    /// Threat model T-03 (SR-003).
+    ///
+    /// Every buffer up to 24 octets, every start and length: re-insertion either succeeds inside
     /// the buffer with the tag in place, or refuses and leaves the buffer untouched — never a
     /// panic, never a write outside.
     #[test]
