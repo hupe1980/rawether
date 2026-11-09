@@ -1,7 +1,7 @@
 {
   "feature": "001-raw-l2-crate",
-  "commit": "744622f",
-  "timestamp": "2026-11-09T10:46:52Z",
+  "commit": "307f8e8",
+  "timestamp": "2026-11-09T10:49:21Z",
   "status": "NOT CONVERGED",
   "threats": {
     "total": 9,

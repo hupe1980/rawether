@@ -10,7 +10,7 @@
 | `TxTime` | `clock: Clock (Tai, Monotonic, Realtime)`, `deadline: bool`, `report_errors: bool` | Linux only; elsewhere `Unsupported` at open |
 | `Socket` | backend state (fd, ring mapping, cursor, buffers), `mac`, `index`, `name` | `!Sync` receive (`&mut self`), sends take `&self` |
 | `Packet<'a>` | `data: &'a [u8]`, `original_len`, `timestamp: Option<Timestamp>`, `vlan_restored` | valid until the next `recv` |
-| `Timestamp` | `secs: i64`, `nanos: u32`, `source: TimestampSource (Hardware, Software)` | |
+| `Timestamp` | `secs: i64`, `nanos: u32`, `source: TimestampSource (Hardware, Software, User)` | `User`: read by rawether when the kernel gave no stamp (the first frames after a socket enables timestamping) |
 | `Stats` | `received: u64`, `dropped: u64` | Linux: `PACKET_STATISTICS` (reset on read; accumulated); BPF: `BIOCGSTATS` |
 | `MacAddr` | `[u8; 6]` | `Display` as `aa:bb:cc:dd:ee:ff`; `FromStr` accepts `:` or `-` |
 | `bpf::Insn` / `bpf::Program` | `{code: u16, jt: u8, jf: u8, k: u32}`; `Vec<Insn>` | `Program::ethertypes(&[u16])`, `Program::run(&[u8]) -> u32` |

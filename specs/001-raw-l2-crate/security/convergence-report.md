@@ -1,6 +1,6 @@
 ## Security Convergence — 001-raw-l2-crate
 
-Commit `744622f` · 2026-11-09T10:46:52Z
+Commit `307f8e8` · 2026-11-09T10:49:21Z
 
 | Metric | Value |
 |---|---|

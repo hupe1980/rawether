@@ -35,6 +35,8 @@ impl Socket {
 impl AsFd for Socket; impl AsRawFd for Socket;
 
 pub fn clock_now(clock: Clock) -> io::Result<Duration>;   // read the launch-time clock
+pub fn drop_capabilities() -> io::Result<()>;             // shed CAP_NET_RAW once sockets are open
+impl Socket { pub fn tx_errors(&mut self) -> io::Result<u64>; } // launch-time drops
 pub mod bpf { pub struct Insn; pub struct Program; impl Program { pub fn ethertypes(&[u16]) -> Program; pub fn run(&self, &[u8]) -> u32; } }
 ```
 
