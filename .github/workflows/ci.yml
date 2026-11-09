@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token; no job uses secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MSRV: "1.88"
+
+jobs:
+  gates:
+    name: gates (fmt, lint, doc, deny, msrv, package, planning paths, workflows)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt \
+            --target aarch64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-pc-windows-gnu
+          rustup toolchain install "$MSRV" --profile minimal
+          rustup default stable
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: just,cargo-deny
+      - run: just fmt-check lint doc deny msrv package planning-paths workflows
+
+  linux:
+    name: tests and the veth suite (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      # A veth pair, both receive paths, the launch-time test on the runner's own kernel
+      # (which has sch_etf), and the steady-state allocation gate.
+      - run: scripts/veth-test.sh
+
+  macos:
+    name: tests (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      # With access to the BPF devices, the loopback test opens one instead of checking the error.
+      - run: sudo -E env "PATH=$PATH" cargo test --lib the_loopback_interface
+
+  windows:
+    name: build (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
