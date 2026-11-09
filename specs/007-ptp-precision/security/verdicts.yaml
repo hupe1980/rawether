@@ -1,0 +1,52 @@
+{
+  "verdicts": [
+    {
+      "requirement": "SR-001",
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs::transmit_timestamps_carry_the_announced_ids, ids_stay_exact_after_a_refused_send_and_reports_coexist (CI ubuntu-24.04 with RAWETHER_REQUIRE_ETF=1)",
+      "result": "pass",
+      "justification": "1 000 single and batched sends return exactly the announced ids; after an etf refusal the next 10 frames carry the ids announced for them, on all three receive paths in CI."
+    },
+    {
+      "requirement": "SR-002",
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "src/hwtstamp.rs::tests::the_nic_configuration_is_never_lowered",
+      "result": "pass",
+      "justification": "Exhaustive over tx_type 0..=3, rx_filter 0..=15 and all requests: writes only widen rx NONE to ALL and tx OFF to ON."
+    },
+    {
+      "requirement": "SR-003",
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs::unread_transmit_timestamps_are_bounded_and_receiving_does_not_spin",
+      "result": "pass",
+      "justification": "2 000 unread stamps: recv waits about 200 ms with little CPU, at most 1 024 are queued, timestamps_lost counts the rest."
+    },
+    {
+      "requirement": "SR-004",
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs::ids_stay_exact_after_a_refused_send_and_reports_coexist (CI etf run)",
+      "result": "pass",
+      "justification": "Through etf one refused launch time gives invalid = 1 and every sent frame keeps its timestamp, reading tx_errors and timestamps in either order."
+    },
+    {
+      "requirement": "SR-005",
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "src/sys/linux.rs::tests::a_short_control_message_is_skipped, only_launch_time_reports_are_counted, a_launch_time_and_an_id_fit_one_control_buffer",
+      "result": "pass",
+      "justification": "Every payload is read through the checked cmsg reader; short and truncated control messages are skipped; the classifier counts only launch-time origins."
+    },
+    {
+      "requirement": "SR-006",
+      "verdict": "verified",
+      "method": "review",
+      "evidence": "src/sys/bsd.rs open: tx_timestamping returns Unsupported naming transmit timestamps",
+      "result": "pass",
+      "justification": "The BSD backend refuses tx_timestamping with ErrorKind::Unsupported and a message naming it; compiled and linted for macOS and FreeBSD in CI."
+    }
+  ]
+}

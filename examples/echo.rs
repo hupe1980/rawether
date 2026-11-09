@@ -17,7 +17,7 @@ fn main() -> std::io::Result<()> {
     };
     let ethertype = u16::from_str_radix(ty.trim_start_matches("0x"), 16)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let mut sock = rawether::Config::new(iface).ethertypes(&[ethertype]).open()?;
+    let mut sock = rawether::Config::new(iface).ethertypes([ethertype]).open()?;
     rawether::drop_capabilities()?;
     let me = sock.mac_address();
     // Reused for every batch: the steady state allocates nothing.

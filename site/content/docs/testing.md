@@ -21,7 +21,8 @@ Documentation describes what the kernel should do. rawether's claims about kerne
 | Link loss | Link down and interface deletion end a waiting receive within 100 ms on both paths; frames return after link up | Linux, on private veth pairs |
 | Miri | The pure modules (ring walk, VLAN re-insertion, BPF, frame view, BPF records, the hardware-timestamp decision) run without undefined behaviour | CI |
 | Fuzzing | `frame_view`, `bpf_program`, `ring_walk`, `bpf_record`, `vlan_reinsert`, 60 s each | CI |
-| BPF device test | A BPF device opens on the loopback interface, or the error names the missing access | macOS |
+| BPF suite (`tests/bpf.rs`) | Filtering of tagged and untagged frames, timestamps, own frames hidden, 1 000 frames received or counted, truncation, timeouts, multicast membership without root | macOS 15 and 26 (`feth`, as a user), FreeBSD 14 (`epair`) |
+| Benchmarks (`bench/`) | Receive throughput and latency against `pcap` and `pnet_datalink`: see [Performance](@/docs/performance.md) | On demand, `scripts/bench.sh --docker` |
 | BPF record layouts | macOS and FreeBSD records, malformed and truncated ones, against the platform's own header | everywhere; FreeBSD in a VM |
 
 ## Running it
@@ -30,7 +31,8 @@ Documentation describes what the kernel should do. rawether's claims about kerne
 cargo test                       # unit tests, any platform
 scripts/veth-test.sh             # the kernel suite, Linux, with sudo
 scripts/veth-test.sh --docker    # the same in a Linux container, from any host
-just ci                          # every local gate: fmt, clippy (5 targets), tests, docs, deny, MSRV, package
+scripts/bpf-test.sh              # the BPF suite on macOS (sudo for the pair) or FreeBSD (root)
+just ci                          # every local gate: fmt, clippy (7 targets), tests, docs, deny, MSRV, package
 just miri                        # the pure modules under Miri
 just fuzz 60                     # every fuzz target for 60 s
 ```
@@ -54,8 +56,8 @@ Every push runs:
 
 | Lane | What runs |
 |---|---|
-| `ubuntu-24.04` | Unit tests, the veth suite on both receive paths, the capability drop, the gates (fmt, clippy for Linux, macOS, FreeBSD, Windows and 32-bit Linux, docs, cargo-deny, MSRV, package, workflow hygiene) |
-| FreeBSD 14 (VM) | Unit tests |
+| `ubuntu-24.04` | Unit tests, the veth suite on both receive paths, the capability drop, the gates (fmt, clippy for Linux (glibc and musl), macOS, FreeBSD, Windows and 32-bit Linux, docs, cargo-deny, MSRV, package, workflow hygiene) |
+| FreeBSD 14 (VM) | Unit tests and the BPF suite on an `epair` |
 | Miri, fuzz | The pure modules under Miri; every fuzz target for 60 s |
-| `macos-15` | Unit tests, including opening a BPF device |
+| `macos-15`, `macos-26` | Unit tests and the BPF suite on a `feth` pair |
 | `windows-2025` | Build and tests; `open` returns `Unsupported` |

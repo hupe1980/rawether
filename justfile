@@ -27,6 +27,8 @@ lint:
     cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
     cargo clippy --all-targets --target x86_64-unknown-freebsd -- -D warnings
     cargo clippy --all-targets --target i686-unknown-linux-gnu -- -D warnings
+    cargo clippy --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+    cargo clippy --all-targets --target aarch64-unknown-linux-musl -- -D warnings
 
 test:
     @echo "==> gate: test"
@@ -73,6 +75,10 @@ veth:
 
 veth-docker:
     scripts/veth-test.sh --docker
+
+# The BPF suite on a feth pair (macOS, sudo) or an epair (FreeBSD, root).
+bpf:
+    scripts/bpf-test.sh
 
 # The crate never cites the planning directories, and the design records name no private note,
 # local path or e-mail address.

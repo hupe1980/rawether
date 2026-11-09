@@ -1,0 +1,13 @@
+verdicts:
+  - requirement: SR-001
+    verdict: verified
+    method: test
+    evidence: src/ethertype.rs::tests::every_name_has_its_registry_value
+    result: pass
+    justification: All 21 constants equal the registry table in research.md (Linux if_ether.h and IEEE assignments for IEC 61850), values are unique, VLAN and QINQ equal TagKind's TPIDs; name() round-trips.
+  - requirement: SR-002
+    verdict: verified
+    method: test
+    evidence: src/ethertype.rs::tests::lengths_and_unnamed_values_print_as_numbers
+    result: pass
+    justification: 0x0000, 0x0050 and 0x05ff report is_length() and no name and print as numbers; 0x0600 is not a length; 0x9100 is unnamed.

@@ -1,0 +1,39 @@
+{
+  "feature": "016-low-latency-ring",
+  "commit": "4142732",
+  "timestamp": "2026-11-09T15:30:06Z",
+  "status": "CONVERGED",
+  "threats": {
+    "total": 2,
+    "open_blocking": []
+  },
+  "requirements": {
+    "total": 2,
+    "verified": [
+      "SR-001",
+      "SR-002"
+    ],
+    "implemented_unverified": [],
+    "partial": [],
+    "missing": [],
+    "risk_accepted": []
+  },
+  "expired_decisions": [],
+  "drift": [],
+  "appended_tasks": [],
+  "already_open_tasks_for": [],
+  "verdicts": {
+    "SR-001": {
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "src/ring.rs::tests::a_frame_ring_slot_is_read_only_when_it_holds_together; fuzz/fuzz_targets/ring_walk.rs (V2 slots, CI fuzz lane)",
+      "justification": "Synthetic slots with tp_mac below the header, tp_mac or snaplen past the slot and kernel-owned status form no frame; random slots fuzzed 60 s in CI without panic."
+    },
+    "SR-002": {
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs with RAWETHER_RX=frame (scripts/veth-test.sh): a_hundred_thousand_frames_are_received_or_counted_as_dropped, sparse_frames_wait_in_the_ring_while_the_reader_is_busy",
+      "justification": "On the frame ring received plus dropped equals sent for a 100 000-frame flood and later frames keep arriving; the held slot is released on the next receive and on drop."
+    }
+  }
+}

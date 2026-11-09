@@ -1,0 +1,229 @@
+otmVersion: 0.2.0
+project:
+  id: 016-low-latency-ring
+  name: Low-latency frame ring
+threatspec:
+  actors:
+  - id: actor.kernel
+    name: The kernel writing slot headers
+    trust: privileged
+  - id: actor.segment-peer
+    name: Any device able to put frames on the link
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: credential-theft
+  - disposition: not-applicable
+    reason: no authentication surface
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: no audit-relevant surface
+    technique: missing-audit-trail
+  - disposition: no-threat-detected
+    reason: 'checked: the ring maps only this socket''s frames, as the block ring does'
+    technique: sensitive-data-exposure
+  - disposition: not-applicable
+    reason: no shared-tenant surface
+    technique: cross-tenant-leak
+  - disposition: not-applicable
+    reason: no authorization surface
+    technique: broken-access-control
+  - disposition: not-applicable
+    reason: no persistent-store surface
+    technique: privilege-escalation-via-config
+  - disposition: no-threat-detected
+    reason: 'checked: frames are delivered as the kernel wrote them; integrity is the protocol''s (THREAT_MODEL
+      out of scope)'
+    technique: data-tampering-in-transit
+  exclusions:
+  - entity: Frame ring geometry
+    reason: configuration validated in component.frame-ring
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T15:22:33Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 00cd7b77e6cb13ad752f4ea18eea2dcc055e69b8153dd47aef76ae81f6d4f5d1
+  - path: spec.md
+    sha256: 83607d899b1f5ac40dd72f0571b1930e34a0e3570977f4e6cecbcf60ebd29d44
+  surfaces:
+  - external-input
+  version: '0.1'
+trustZones:
+- id: tz.kernel
+  name: The kernel and the shared ring
+  risk:
+    trustRating: 9
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.process-memory
+  name: Memory safety of the caller's process
+  risk:
+    availability: 80
+    confidentiality: 80
+    integrity: 95
+  attributes:
+    type: business-data
+    source: THREAT_MODEL.md#Assets
+    classification: internal
+- id: asset.receive-availability
+  name: Frames delivered without loss or stalls
+  risk:
+    availability: 80
+    confidentiality: 0
+    integrity: 30
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-1
+    classification: internal
+components:
+- id: component.frame-ring
+  name: TPACKET_V2 slot walker
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-003
+dataflows:
+- id: flow.slots
+  name: The kernel hands slots to the walker
+  source: actor.kernel
+  destination: component.frame-ring
+  assets:
+  - asset.process-memory
+  - asset.receive-availability
+  attributes:
+    crosses:
+    - tz.kernel
+    - tz.process
+threats:
+- id: threat.slot-never-released
+  name: A skipped or malformed slot is never handed back, so the ring fills and every later frame is dropped
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-404
+  risk:
+    impact: 70
+    likelihood: 30
+  attributes:
+    source: spec.md#FR-003
+    assets:
+    - asset.receive-availability
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.frame-ring
+    profile: stride
+    severity: medium
+    technique: resource-exhaustion
+- id: threat.slot-offsets-out-of-bounds
+  name: A slot header whose tp_mac or tp_snaplen points outside the slot makes the walker form a slice outside the
+    mapping
+  categories:
+  - Tampering
+  cwes:
+  - CWE-125
+  risk:
+    impact: 95
+    likelihood: 20
+  attributes:
+    source: spec.md#User-Story-3
+    assets:
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.frame-ring
+    - flow.slots
+    profile: stride
+    severity: medium
+    technique: injection
+mitigations:
+- id: mitigation.checked-slot-walk
+  name: Read a slot only after TP_STATUS_USER with acquire ordering; check mac >= header and mac + snaplen <= slot
+    before slicing
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.slot-offsets-out-of-bounds
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/ring.rs
+    - src/sys/linux.rs
+- id: mitigation.release-every-slot
+  name: Every slot taken is released on the next receive, whether delivered or skipped
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.slot-never-released
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/sys/linux.rs
+requirements:
+- id: SR-001
+  statement: The frame-ring walker MUST NOT form a slice outside the slot, and MUST NOT read a slot whose status
+    lacks TP_STATUS_USER.
+  priority: P2
+  mitigations:
+  - mitigation.checked-slot-walk
+  acceptance:
+  - given: synthetic slots with tp_mac below the header, tp_mac or tp_snaplen past the slot, and a kernel-owned
+      status
+    then: no frame is formed
+    when: they are read
+  - given: random slots
+    then: no panic, no out-of-bounds access
+    when: fuzzed and run under Miri
+  tasks: []
+- id: SR-002
+  statement: Every frame-ring slot the reader takes MUST be returned to the kernel by the next receive, whether
+    it was delivered or skipped.
+  priority: P2
+  mitigations:
+  - mitigation.release-every-slot
+  acceptance:
+  - given: the veth suite on the frame ring (100 000-frame flood, sparse frames, malformed-free traffic)
+    then: received plus dropped equals sent and later frames keep arriving
+    when: it runs
+  tasks: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: src/ring.rs::tests::a_frame_ring_slot_is_read_only_when_it_holds_together; fuzz/fuzz_targets/ring_walk.rs
+    (V2 slots, CI fuzz lane)
+  result: pass
+  verdict: verified
+  justification: Synthetic slots with tp_mac below the header, tp_mac or snaplen past the slot and kernel-owned
+    status form no frame; random slots fuzzed 60 s in CI without panic.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: 'tests/veth.rs with RAWETHER_RX=frame (scripts/veth-test.sh): a_hundred_thousand_frames_are_received_or_counted_as_dropped,
+    sparse_frames_wait_in_the_ring_while_the_reader_is_busy'
+  result: pass
+  verdict: verified
+  justification: On the frame ring received plus dropped equals sent for a 100 000-frame flood and later frames
+    keep arriving; the held slot is released on the next receive and on drop.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+decisions: []

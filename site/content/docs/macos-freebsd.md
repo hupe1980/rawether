@@ -10,7 +10,7 @@ group = "Platforms"
 On macOS and FreeBSD, a rawether socket is a **BPF device** (`/dev/bpf` or `/dev/bpf0`, `/dev/bpf1`, …) attached to one interface. BPF is the facility `tcpdump` and Wireshark use. It reads and writes whole Ethernet frames and runs classic-BPF filters in the kernel, so the same `bpf::Program` works on both systems and on Linux.
 
 > [!NOTE]
-> CI runs the unit tests on macOS (including opening a BPF device) and on FreeBSD 14 in a VM.
+> CI sends and receives real frames through BPF on macOS 15 and macOS 26 (a `feth` pair) and on FreeBSD 14 (an `epair`): filtering, timestamps, own-frame suppression, counters, truncation and timeouts. On macOS the suite runs as an ordinary user with access to `/dev/bpf*`.
 
 ## Access
 
@@ -38,7 +38,7 @@ Without access, `open` fails with `PermissionDenied`. If every BPF device is bus
 | Receive | A read returns every frame waiting in the buffer; rawether hands them out one at a time. `rx_path()` is `RxPath::Bpf` |
 | Timestamps | Software only, from the BPF header, with microsecond resolution |
 | All-multicast | Not a separate mode: `all_multicast(true)` turns on promiscuous mode |
-| Multicast groups | BPF has no membership call. rawether keeps a datagram socket that holds the memberships for as long as the socket is open |
+| Multicast groups | BPF has no membership call. rawether joins on the interface (`SIOCADDMULTI`) and leaves the groups it joined when the socket is dropped. Joining (`SIOCADDMULTI`) needs root on macOS, even with access to `/dev/bpf*`; without it, `open` fails with `PermissionDenied`. Without root, use `promiscuous(true)` with an EtherType filter instead |
 | Own transmissions | Hidden unless `see_outgoing(true)` |
 | VLAN tags | Delivered in place; nothing to restore |
 | Batched send | One `write` per frame |

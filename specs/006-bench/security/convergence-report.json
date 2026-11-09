@@ -1,0 +1,32 @@
+{
+  "feature": "006-bench",
+  "commit": "4142732",
+  "timestamp": "2026-11-09T15:30:05Z",
+  "status": "CONVERGED",
+  "threats": {
+    "total": 1,
+    "open_blocking": []
+  },
+  "requirements": {
+    "total": 1,
+    "verified": [
+      "SR-001"
+    ],
+    "implemented_unverified": [],
+    "partial": [],
+    "missing": [],
+    "risk_accepted": []
+  },
+  "expired_decisions": [],
+  "drift": [],
+  "appended_tasks": [],
+  "already_open_tasks_for": [],
+  "verdicts": {
+    "SR-001": {
+      "verdict": "verified",
+      "method": "review",
+      "evidence": "site/content/docs/performance.md against scripts/bench.sh --docker output of 2026-11-09",
+      "justification": "All five rows equal the recorded harness run (block ring, frame ring, plain, pcap, pnet); the method lists the sender, the traffic shapes, the kernel filters per receiver and the end-of-run frames."
+    }
+  }
+}

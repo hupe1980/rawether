@@ -26,7 +26,9 @@ rawether is a Rust library for **raw layer-2 Ethernet I/O**. You open a `Socket`
 - **Kernel filtering.** An [EtherType set or a classic-BPF program](@/docs/filtering.md) decides in the kernel which frames reach the socket.
 - **Receive paths.** On Linux, a zero-copy [TPACKET_V3 ring](@/docs/receiving.md), or one `recvmsg` per frame. On the BSDs, a BPF read buffer. `Socket::rx_path` says which one you have.
 - **Borrowed packets.** A `Packet` borrows the socket until the next receive; the compiler stops you from keeping it longer. See [How it works](@/docs/how-it-works.md).
-- **Labelled timestamps.** Each frame says whether the [NIC, the kernel or rawether](@/docs/timestamps.md) stamped it.
+- **Labelled timestamps.** Each frame says whether the [NIC, the kernel or rawether](@/docs/timestamps.md) stamped it. Transmit timestamps come back matched to their frame by id, with the PTP hardware clock behind the interface.
+- **EtherType names.** [`EtherType::PTP`, `EtherType::GOOSE`, …](@/docs/filtering.md#ethertype-names) for well-known types; any value works.
 - **Transmission.** [Single, batched and prioritised sends](@/docs/sending.md), and [launch times](@/docs/launch-time.md) for TSN schedules.
 - **Event loops.** A socket is a file descriptor: use it [with poll, mio or tokio](@/docs/event-loops.md).
 - **Security.** The [threat model](@/docs/threat-model.md) lists every class rawether defends against and the [test](@/docs/testing.md) that guards it.
+- **Performance.** [Measured](@/docs/performance.md) against `pcap` and `pnet_datalink`, with the method to reproduce it.

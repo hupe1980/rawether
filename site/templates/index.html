@@ -91,7 +91,7 @@
       </article>
       <article class="card">
         <h3>Timestamps that say whose they are</h3>
-        <p>Every frame records which clock stamped it: the NIC's, the kernel's, or rawether's own read. The NIC's stamping configuration is never lowered, so it is safe next to <code>ptp4l</code>.</p>
+        <p>Received and transmitted frames carry their timestamp and which clock made it, the NIC's or the kernel's; transmit timestamps come back matched to their frame by id, with the PTP hardware clock behind the interface. Safe next to <code>ptp4l</code>.</p>
         <a href="{{ get_url(path='@/docs/timestamps.md') }}">Timestamps</a>
       </article>
       <article class="card">
@@ -126,8 +126,8 @@
       </article>
       <article class="card">
         <h3>Tested on a real kernel</h3>
-        <p>Kernel behaviour is checked on a veth pair in CI, on both receive paths, from drops under load to links going down. The parsers run under Miri and a fuzzer, and FreeBSD runs in a VM.</p>
-        <a href="{{ get_url(path='@/docs/testing.md') }}">Testing</a>
+        <p>Kernel behaviour is checked in CI on Linux, macOS and FreeBSD, from drops under load to links going down; the parsers run under Miri and a fuzzer. The block ring receives 2.8 M frames/s over veth, 1.8× libpcap; the frame ring answers in 15 µs.</p>
+        <a href="{{ get_url(path='@/docs/performance.md') }}">Performance</a>
       </article>
     </div>
   </div>

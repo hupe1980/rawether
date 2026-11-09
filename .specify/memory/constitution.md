@@ -1,5 +1,9 @@
 <!--
 Sync Impact Report
+- Version: 1.1.0 → 2.0.0 (2026-11-09). MAJOR: principle I redefined. EtherType *names* are
+  allowed as a curated, open newtype (`EtherType(u16)` with named constants for well-known
+  types); payload types and parsing stay out. Reason: readable filters and logs, and type safety
+  against 802.3 lengths, as in etherparse and smoltcp. Record 015 implements it.
 - Version: 1.0.0 → 1.1.0 (2026-11-09). MINOR: the design records become public (tracked
   specs/ and .specify/, as in the sibling procage), and every change gains the ThreatSpec steps.
   No principle changed.
@@ -22,11 +26,15 @@ timestamps, in-kernel filters, launch-time transmit — behind one small, safe A
 
 ### I. Generic, and nothing above layer 2
 
-The crate moves frames, timestamps and counters. It knows no protocol: no EtherType constants
-in its API, no parsing of payloads, no opinion about PTP, LLDP or industrial protocols. A filter
-is a set of EtherTypes or a caller's classic-BPF program, never a protocol name.
+The crate moves frames, timestamps and counters, and reads only the Ethernet header. It
+*names* EtherTypes — an open `EtherType(u16)` newtype with constants for a curated set of
+well-known types, each checked against the IEEE registry — but parses nothing after the
+EtherType: no payload types, no protocol logic, no opinion about PTP, LLDP or industrial
+protocols. Any value works without a name. A filter is a set of EtherTypes or a caller's
+classic-BPF program.
 
-*Checked by:* review; the public API has no protocol-specific item.
+*Checked by:* review; the public API has no item that reads or builds a payload, and every
+named EtherType cites its registry entry.
 
 ### II. `unsafe` is confined, justified and small
 
@@ -98,4 +106,4 @@ This constitution outranks every other practice in the repository. An amendment 
 version bump in the Sync Impact Report. MAJOR removes or redefines a principle, MINOR adds or
 materially expands one, PATCH clarifies wording. A principle is never renumbered.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-09 | **Last Amended**: 2026-11-09
+**Version**: 2.0.0 | **Ratified**: 2026-11-09 | **Last Amended**: 2026-11-09

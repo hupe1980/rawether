@@ -10,9 +10,8 @@
 
 use std::time::{Duration, Instant};
 
-use rawether::{Config, FrameBuilder, MacAddr};
+use rawether::{Config, EtherType, FrameBuilder, MacAddr};
 
-const LLDP: u16 = 0x88cc;
 const NEAREST_BRIDGE: MacAddr = MacAddr([0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e]);
 
 fn tlv(out: &mut Vec<u8>, kind: u8, value: &[u8]) {
@@ -52,11 +51,11 @@ fn main() -> std::io::Result<()> {
         eprintln!("usage: lldp <interface>");
         std::process::exit(2);
     };
-    let mut sock = Config::new(&iface).ethertypes(&[LLDP]).join(NEAREST_BRIDGE).open()?;
+    let mut sock = Config::new(&iface).ethertypes([EtherType::LLDP]).join(NEAREST_BRIDGE).open()?;
     rawether::drop_capabilities()?;
     let me = std::env::var("HOSTNAME").unwrap_or_else(|_| String::from("rawether"));
     let mut frame = Vec::with_capacity(1518);
-    FrameBuilder::new(NEAREST_BRIDGE, sock.mac_address(), LLDP)
+    FrameBuilder::new(NEAREST_BRIDGE, sock.mac_address(), EtherType::LLDP)
         .write(&mut frame, &announcement(sock.mac_address(), &iface, &me));
     sock.send(&frame)?;
     println!("announced {me} on {iface}; listening for 60 s");

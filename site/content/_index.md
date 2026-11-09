@@ -6,10 +6,12 @@ template = "index.html"
 
 ```rust
 use std::time::Duration;
+use rawether::EtherType;
 
 // LLDP and PTP frames, VLAN-tagged or not.
+
 let mut sock = rawether::Config::new("eth0")
-    .ethertypes(&[0x88cc, 0x88f7])
+    .ethertypes([EtherType::LLDP, EtherType::PTP])
     .open()?;
 
 // CAP_NET_RAW is no longer needed.
@@ -19,7 +21,7 @@ rawether::drop_capabilities()?;
 while let Some(p) = sock.recv(Some(Duration::from_secs(1)))? {
     let Some(f) = p.frame() else { continue };
     let tags = f.vlan_tags().len();
-    println!("{} sent {:04x}, {tags} tag(s), at {:?}",
+    println!("{} sent {}, {tags} tag(s), at {:?}",
         f.source(), f.ethertype(), p.timestamp());
 }
 ```

@@ -28,6 +28,23 @@ pub(crate) mod frame {
     pub const HDR: usize = 48;
 }
 
+/// Layout of `struct tpacket2_hdr` (the per-frame ring). The header is followed by a
+/// `sockaddr_ll` at `TPACKET_ALIGN(32)` = 32.
+pub(crate) mod frame2 {
+    pub const STATUS: usize = 0;
+    pub const LEN: usize = 4;
+    pub const SNAPLEN: usize = 8;
+    pub const MAC: usize = 12;
+    pub const SEC: usize = 16;
+    pub const NSEC: usize = 20;
+    pub const VLAN_TCI: usize = 24;
+    pub const VLAN_TPID: usize = 26;
+    pub const HDR: usize = 32;
+    /// `sll_pkttype` of the `sockaddr_ll` after the header.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub const SLL_PKTTYPE: usize = 32 + 10;
+}
+
 /// `TP_STATUS_*` bits the walker reads.
 pub(crate) mod status {
     pub const USER: u32 = 1;
@@ -105,6 +122,33 @@ impl FrameMeta {
         // The data must lie inside the block and after the header.
         let start = at.checked_add(m.mac)?;
         if m.mac < frame::HDR || start.checked_add(m.snaplen)? > block.len() {
+            return None;
+        }
+        Some(m)
+    }
+
+    /// The frame in a per-frame ring slot, if the kernel has handed it over and its header and
+    /// data lie inside the slot.
+    pub(crate) fn read_v2(slot: &[u8]) -> Option<FrameMeta> {
+        if slot.len() < frame2::HDR {
+            return None;
+        }
+        let status = u32_at(slot, frame2::STATUS)?;
+        if status & status::USER == 0 {
+            return None;
+        }
+        let m = FrameMeta {
+            next: 0,
+            sec: u32_at(slot, frame2::SEC)?,
+            nsec: u32_at(slot, frame2::NSEC)?,
+            snaplen: u32_at(slot, frame2::SNAPLEN)? as usize,
+            len: u32_at(slot, frame2::LEN)? as usize,
+            status,
+            mac: usize::from(u16_at(slot, frame2::MAC)?),
+            vlan_tci: u16_at(slot, frame2::VLAN_TCI)?,
+            vlan_tpid: u16_at(slot, frame2::VLAN_TPID)?,
+        };
+        if m.mac < frame2::HDR || m.mac.checked_add(m.snaplen)? > slot.len() {
             return None;
         }
         Some(m)
@@ -253,5 +297,40 @@ pub(crate) mod tests {
         let mut blk = synthetic_block(4096, &[(&[0u8; 60], 0, None)]);
         blk[64 + frame::MAC..64 + frame::MAC + 2].copy_from_slice(&8u16.to_ne_bytes());
         assert!(FrameMeta::read(&blk, 64).is_none());
+    }
+
+    /// A per-frame ring slot as the kernel writes it.
+    fn slot(size: usize, status_bits: u32, mac: u16, data: &[u8]) -> Vec<u8> {
+        let mut s = vec![0u8; size];
+        s[frame2::STATUS..frame2::STATUS + 4].copy_from_slice(&(status::USER | status_bits).to_ne_bytes());
+        s[frame2::LEN..frame2::LEN + 4].copy_from_slice(&(data.len() as u32).to_ne_bytes());
+        s[frame2::SNAPLEN..frame2::SNAPLEN + 4].copy_from_slice(&(data.len() as u32).to_ne_bytes());
+        s[frame2::MAC..frame2::MAC + 2].copy_from_slice(&mac.to_ne_bytes());
+        s[frame2::SEC..frame2::SEC + 4].copy_from_slice(&7u32.to_ne_bytes());
+        let m = usize::from(mac);
+        if m + data.len() <= size {
+            s[m..m + data.len()].copy_from_slice(data);
+        }
+        s
+    }
+
+    /// Spec 016 SR-001: a good slot is read; offsets outside the slot or a kernel-owned slot are
+    /// refused.
+    #[test]
+    fn a_frame_ring_slot_is_read_only_when_it_holds_together() {
+        let good = slot(2048, status::TS_RAW_HARDWARE, 80, &[0xab; 60]);
+        let m = FrameMeta::read_v2(&good).expect("a user-owned slot");
+        assert_eq!((m.mac, m.snaplen, m.len, m.sec), (80, 60, 60, 7));
+        assert_ne!(m.status & status::TS_RAW_HARDWARE, 0);
+
+        assert!(FrameMeta::read_v2(&slot(2048, 0, 16, &[0; 60])).is_none(), "mac inside the header");
+        assert!(FrameMeta::read_v2(&slot(2048, 0, 2000, &[0; 60])).is_none(), "data past the slot");
+        let mut long = good.clone();
+        long[frame2::SNAPLEN..frame2::SNAPLEN + 4].copy_from_slice(&100_000u32.to_ne_bytes());
+        assert!(FrameMeta::read_v2(&long).is_none(), "snaplen past the slot");
+        let mut kernel = good.clone();
+        kernel[frame2::STATUS..frame2::STATUS + 4].copy_from_slice(&0u32.to_ne_bytes());
+        assert!(FrameMeta::read_v2(&kernel).is_none(), "still owned by the kernel");
+        assert!(FrameMeta::read_v2(&good[..20]).is_none(), "shorter than a header");
     }
 }

@@ -1,0 +1,12 @@
+{
+  "verdicts": [
+    {
+      "requirement": "SR-001",
+      "verdict": "verified",
+      "method": "review",
+      "evidence": "site/content/docs/performance.md against scripts/bench.sh --docker output of 2026-11-09",
+      "result": "pass",
+      "justification": "All five rows equal the recorded harness run (block ring, frame ring, plain, pcap, pnet); the method lists the sender, the traffic shapes, the kernel filters per receiver and the end-of-run frames."
+    }
+  ]
+}

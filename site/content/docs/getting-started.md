@@ -52,7 +52,7 @@ use std::time::Duration;
 
 fn main() -> std::io::Result<()> {
     // Only LLDP frames, tagged or not.
-    let mut sock = rawether::Config::new("eth0").ethertypes(&[0x88cc]).open()?;
+    let mut sock = rawether::Config::new("eth0").ethertypes([rawether::EtherType::LLDP]).open()?;
     rawether::drop_capabilities()?;
 
     println!("{} ({}) on the {:?} path", sock.interface(), sock.mac_address(), sock.rx_path());
@@ -69,13 +69,13 @@ fn main() -> std::io::Result<()> {
 ## Send a frame
 
 ```rust
-use rawether::{Config, FrameBuilder, MacAddr};
+use rawether::{Config, EtherType, FrameBuilder, MacAddr};
 
 fn main() -> std::io::Result<()> {
     let sock = Config::new("eth0").open()?;
     let mut frame = Vec::with_capacity(1518);
     // To everyone, from this interface, with a local experimental EtherType.
-    FrameBuilder::new(MacAddr::BROADCAST, sock.mac_address(), 0x88b5)
+    FrameBuilder::new(MacAddr::BROADCAST, sock.mac_address(), EtherType::LOCAL_EXPERIMENTAL_1)
         .write(&mut frame, b"hello, layer 2"); // padded to the 60-octet minimum
     sock.send(&frame)
 }

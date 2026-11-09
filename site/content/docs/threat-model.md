@@ -47,6 +47,7 @@ The kernel and its drivers. Even so, rawether does not let inconsistent ring met
 | T-13 | BPF read-buffer records misparsed (macOS and FreeBSD lay them out differently) | Parsed field by field at each platform's offsets, bounded by the buffer | mitigated (macOS, FreeBSD) |
 | T-14 | A control message shorter than what is read from it | Truncated buffers ignored; each message checked to hold its payload | mitigated (Linux) |
 | T-15 | A receive spinning a CPU core when the link goes down or the interface disappears | `recv` returns the socket's error | mitigated |
+| T-16 | A transmit timestamp attributed to the wrong frame | Each frame's id is passed to the kernel (Linux 6.13+); unread timestamps are bounded and their loss counted | mitigated (Linux 6.13+) |
 
 "Detected" means rawether cannot prevent the loss, but it makes sure you can see it.
 

@@ -17,16 +17,20 @@ use super::unix::{Ready, ifr_name, interface_index, last_error, set_nonblocking,
 use crate::bpf::Program;
 use crate::bpf_record::{self, Layout};
 use crate::config::{Clock, Config, Timestamping};
-use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
+use crate::packet::{
+    MacAddr, Packet, RxPath, Stats, Timestamp, TimestampInfo, TimestampSource, TxErrors, TxTimestamp,
+};
 
-/// `BIOCSDIRECTION` (`_IOW('B', 119, u_int)`) and `BPF_D_IN` (FreeBSD `<net/bpf.h>`): see only
-/// incoming frames. Not exported by `libc`; FreeBSD's `BIOCSSEESENT` is an alias of it.
 /// `SIOCADDMULTI` = `_IOW('i', 49, struct ifreq)` (`<sys/sockio.h>`), the same on macOS and
 /// FreeBSD; not exported by `libc` for either.
 const SIOCADDMULTI: libc::c_ulong = 0x8000_0000
     | (((size_of::<libc::ifreq>() as libc::c_ulong) & 0x1fff) << 16)
     | ((b'i' as libc::c_ulong) << 8)
     | 0x31; // command 49
+/// `SIOCDELMULTI` = `_IOW('i', 50, struct ifreq)`.
+const SIOCDELMULTI: libc::c_ulong = SIOCADDMULTI + 1;
+/// `BIOCSDIRECTION` (`_IOW('B', 119, u_int)`) and `BPF_D_IN` (FreeBSD `<net/bpf.h>`): see only
+/// incoming frames. Not exported by `libc`; FreeBSD's `BIOCSSEESENT` is an alias of it.
 #[cfg(target_os = "freebsd")]
 const BIOCSDIRECTION: libc::c_ulong = 0x8004_4277;
 #[cfg(target_os = "freebsd")]
@@ -64,12 +68,18 @@ pub(crate) struct Inner {
     end: usize,
     /// Frames handed out since the socket opened: `Stats::received`.
     delivered: u64,
-    /// A datagram socket kept for multicast membership, which BSD holds per socket.
-    _membership: Option<OwnedFd>,
+    /// The multicast groups this socket joined, left again on drop.
+    _membership: Option<Membership>,
 }
 
 impl Inner {
     pub(crate) fn open(cfg: &Config, program: Option<&Program>) -> io::Result<Inner> {
+        if cfg.tx_timestamping != Timestamping::Off {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "transmit timestamps are Linux-only: BPF devices do not report them",
+            ));
+        }
         if cfg.tx_time.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -165,6 +175,18 @@ impl Inner {
         self.fd.as_fd()
     }
 
+    pub(crate) fn tx_timestamping(&self) -> Timestamping {
+        Timestamping::Off
+    }
+
+    pub(crate) fn next_tx_id(&self) -> u32 {
+        0
+    }
+
+    pub(crate) fn tx_timestamp(&mut self, _: Option<Duration>) -> io::Result<Option<TxTimestamp>> {
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "transmit timestamps are off (and Linux-only)"))
+    }
+
     pub(crate) fn timestamping(&self) -> Timestamping {
         // BPF stamps in software; a request for hardware stamps gets those.
         if self.timestamping == Timestamping::Off { Timestamping::Off } else { Timestamping::Software }
@@ -192,7 +214,7 @@ impl Inner {
             self.end = 0;
             let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
             // On `Ready::Error` the read below returns the device's error.
-            if wait(self.fd.as_fd(), remaining)? == Ready::Timeout {
+            if wait(self.fd.as_fd(), remaining, libc::POLLIN)? == Ready::Timeout {
                 return Ok(None);
             }
             // SAFETY: reads at most `buf.len()` octets into `buf`, as BPF requires.
@@ -256,6 +278,12 @@ impl Inner {
         self.nonblocking = on;
         Ok(())
     }
+}
+
+/// BPF stamps received frames in software; there are no transmit stamps and no hardware clock.
+pub(crate) fn timestamp_info(name: &str) -> io::Result<TimestampInfo> {
+    interface_index(name)?;
+    Ok(TimestampInfo { software_rx: true, ..TimestampInfo::default() })
 }
 
 fn open_device() -> io::Result<OwnedFd> {
@@ -342,7 +370,30 @@ fn hardware_address(name: &str) -> io::Result<MacAddr> {
     Ok(found.unwrap_or_default())
 }
 
-fn join_groups(name: &str, groups: &[MacAddr]) -> io::Result<OwnedFd> {
+/// Link-layer multicast memberships on one interface. `SIOCADDMULTI` joins the interface,
+/// not the socket that asked, so the membership outlives a close: drop leaves every group
+/// this socket added. A group that was already joined (FreeBSD: `EADDRINUSE`) belongs to
+/// whoever joined it and is left alone.
+#[derive(Debug)]
+struct Membership {
+    fd: OwnedFd,
+    name: String,
+    added: Vec<MacAddr>,
+}
+
+impl Drop for Membership {
+    fn drop(&mut self) {
+        for g in &self.added {
+            if let Ok(mut ifr) = group_request(&self.name, *g) {
+                // SAFETY: SIOCDELMULTI reads `ifr`, which is live. A failure leaves nothing
+                // to do: the interface may be gone.
+                unsafe { libc::ioctl(self.fd.as_raw_fd(), SIOCDELMULTI as _, &raw mut ifr) };
+            }
+        }
+    }
+}
+
+fn join_groups(name: &str, groups: &[MacAddr]) -> io::Result<Membership> {
     // SAFETY: plain system call.
     let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc_cloexec(), 0) };
     if raw < 0 {
@@ -351,23 +402,52 @@ fn join_groups(name: &str, groups: &[MacAddr]) -> io::Result<OwnedFd> {
     // SAFETY: `raw` was just created and is owned by nobody else.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     set_cloexec(&fd)?;
+    // Built first, so a failure part-way leaves the groups already added.
+    let mut m = Membership { fd, name: name.to_owned(), added: Vec::new() };
     for g in groups {
-        // SAFETY: all-zero is a valid `ifreq`.
-        let mut ifr: libc::ifreq = unsafe { zeroed() };
-        ifr.ifr_name = ifr_name(name)?;
-        // SAFETY: writing the `ifru_addr` member of the union, a plain `sockaddr`.
-        let sa = unsafe { &mut ifr.ifr_ifru.ifru_addr };
-        sa.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
-        sa.sa_len = size_of::<libc::sockaddr>() as u8;
-        for (o, b) in sa.sa_data.iter_mut().zip(g.0) {
-            *o = b as libc::c_char;
-        }
+        let mut ifr = group_request(name, *g)?;
         // SAFETY: SIOCADDMULTI reads `ifr`, which is live.
-        if unsafe { libc::ioctl(fd.as_raw_fd(), SIOCADDMULTI as _, &raw mut ifr) } < 0 {
-            return Err(last_error(&format!("SIOCADDMULTI {g} on {name}")));
+        if unsafe { libc::ioctl(m.fd.as_raw_fd(), SIOCADDMULTI as _, &raw mut ifr) } == 0 {
+            m.added.push(*g);
+            continue;
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EADDRINUSE) => {}
+            Some(libc::EPERM | libc::EACCES) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "SIOCADDMULTI {g} on {name}: joining a multicast group needs root (access to /dev/bpf* is not enough); run as root, or receive the group with promiscuous(true) and an EtherType filter"
+                    ),
+                ));
+            }
+            _ => return Err(io::Error::new(e.kind(), format!("SIOCADDMULTI {g} on {name}: {e}"))),
         }
     }
-    Ok(fd)
+    Ok(m)
+}
+
+/// An `ifreq` naming interface `name` and link-layer group `g`.
+fn group_request(name: &str, g: MacAddr) -> io::Result<libc::ifreq> {
+    // SAFETY: all-zero is a valid `ifreq`.
+    let mut ifr: libc::ifreq = unsafe { zeroed() };
+    ifr.ifr_name = ifr_name(name)?;
+    {
+        // The group as a link-layer `sockaddr_dl` in `ifr_addr`, as FreeBSD's mtest(8) builds
+        // it: FreeBSD accepts only AF_LINK here, macOS AF_LINK or AF_UNSPEC. After `sdl_len`
+        // and `sdl_family`, `sa_data` holds `sdl_index` (2), `sdl_type`, `sdl_nlen`, `sdl_alen`,
+        // `sdl_slen`, then the address (nlen = 0).
+        // SAFETY: writing the `ifru_addr` member of the union, a plain `sockaddr`.
+        let sa = unsafe { &mut ifr.ifr_ifru.ifru_addr };
+        sa.sa_len = size_of::<libc::sockaddr_dl>() as u8;
+        sa.sa_family = libc::AF_LINK as libc::sa_family_t;
+        sa.sa_data[4] = 6; // sdl_alen
+        for (o, b) in sa.sa_data[6..12].iter_mut().zip(g.0) {
+            *o = b as libc::c_char;
+        }
+    }
+    Ok(ifr)
 }
 
 /// `SOCK_CLOEXEC` where the platform has it at `socket(2)`; macOS sets it afterwards.
@@ -412,10 +492,23 @@ pub(crate) fn drop_capabilities() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Spec 007 SR-006: transmit timestamps are refused, naming them; capabilities are known.
+    #[test]
+    #[cfg_attr(miri, ignore)] // system calls
+    fn transmit_timestamps_are_unsupported_and_capabilities_are_reported() {
+        let e = Inner::open(&Config::new("lo0").tx_timestamping(Timestamping::Software), None)
+            .expect_err("no tx stamps");
+        assert_eq!(e.kind(), io::ErrorKind::Unsupported);
+        assert!(e.to_string().contains("transmit timestamps"), "{e}");
+        let info = timestamp_info("lo0").expect("lo0 exists");
+        assert!(info.software_rx && !info.software_tx && info.phc_index.is_none());
+        assert_eq!(timestamp_info("no-such-if0").expect_err("missing").kind(), io::ErrorKind::NotFound);
+    }
+
     /// The ioctl numbers rawether defines itself, against `<sys/sockio.h>` and `<net/bpf.h>`.
     #[test]
     fn locally_defined_ioctls_match_the_headers() {
-        assert_eq!(SIOCADDMULTI, 0x8020_6931);
+        assert_eq!((SIOCADDMULTI, SIOCDELMULTI), (0x8020_6931, 0x8020_6932));
         #[cfg(target_os = "freebsd")]
         assert_eq!(BIOCSDIRECTION, 0x8004_4277);
     }

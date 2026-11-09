@@ -26,7 +26,7 @@ use tokio::io::unix::AsyncFd;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let sock = rawether::Config::new("eth0").ethertypes(&[0x88f7]).nonblocking(true).open()?;
+    let sock = rawether::Config::new("eth0").ethertypes([rawether::EtherType::PTP]).nonblocking(true).open()?;
     rawether::drop_capabilities()?;
     // SAFETY: a `Socket` owns its descriptor until it is dropped, and `as_raw_fd`
     // always returns that one.

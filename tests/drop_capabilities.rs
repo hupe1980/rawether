@@ -9,19 +9,22 @@ fn main() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rawether::{Config, FrameBuilder, RxMode};
+    use rawether::{Config, EtherType, FrameBuilder, RxMode};
 
     let (Ok(iface), Ok(peer)) = (std::env::var("RAWETHER_TEST_IFACE"), std::env::var("RAWETHER_TEST_PEER"))
     else {
         println!("drop_capabilities: skipped (no veth pair)");
         return;
     };
-    let tx = Config::new(&iface).ethertypes(&[0xffff]).rx_mode(RxMode::Plain).open();
+    let tx = Config::new(&iface).ethertypes([0xffffu16]).rx_mode(RxMode::Plain).open();
     let Ok(tx) = tx else {
         println!("drop_capabilities: skipped (no CAP_NET_RAW)");
         return;
     };
-    let mut rx = Config::new(&peer).ethertypes(&[0x88b5]).open().expect("open the receiving socket");
+    let mut rx = Config::new(&peer)
+        .ethertypes([EtherType::LOCAL_EXPERIMENTAL_1])
+        .open()
+        .expect("open the receiving socket");
     let status = |what: &str| -> u64 {
         let s = std::fs::read_to_string("/proc/self/status").expect("status");
         let line = s.lines().find(|l| l.starts_with(what)).expect(what);
@@ -54,7 +57,8 @@ fn main() {
 
     // The open sockets keep working; a new one is refused, naming the capability.
     let mut frame = Vec::new();
-    FrameBuilder::new(rx.mac_address(), tx.mac_address(), 0x88b5).write(&mut frame, b"after the drop");
+    FrameBuilder::new(rx.mac_address(), tx.mac_address(), EtherType::LOCAL_EXPERIMENTAL_1)
+        .write(&mut frame, b"after the drop");
     tx.send(&frame).expect("send after the drop");
     let p = rx.recv(Some(Duration::from_secs(2))).expect("recv").expect("a frame after the drop");
     assert!(p.data().windows(14).any(|w| w == b"after the drop"));

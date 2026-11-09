@@ -2,8 +2,8 @@
 //!
 //! Skips unless `RAWETHER_TEST_IFACE` and `RAWETHER_TEST_PEER` name the two ends of a veth pair
 //! and the process has `CAP_NET_RAW` (and `CAP_NET_ADMIN` for the launch-time test).
-//! `scripts/veth-test.sh` sets that up, natively with sudo or in Docker. `RAWETHER_RX=plain`
-//! runs the whole suite on the plain receive path instead of the ring.
+//! `scripts/veth-test.sh` sets that up, natively with sudo or in Docker. `RAWETHER_RX=plain` or `frame`
+//! runs the whole suite on the plain path or the per-frame ring instead of the block ring.
 
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used, clippy::panic)]
@@ -12,7 +12,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use rawether::{Config, FrameBuilder, MacAddr, RxMode, RxPath, Socket, TagKind, TimestampSource, VlanTag};
+use rawether::{
+    Config, EtherType, FrameBuilder, MacAddr, RxMode, RxPath, Socket, TagKind, TimestampSource, VlanTag,
+};
 
 /// Counts allocations so the steady-state loop can be shown to make none.
 struct Counting;
@@ -35,8 +37,8 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 /// A local experimental EtherType (IEEE 802 "Local Experimental Ethertype 1"), and a second one.
-const TYPE_A: u16 = 0x88b5;
-const TYPE_B: u16 = 0x88b6;
+const TYPE_A: EtherType = EtherType::LOCAL_EXPERIMENTAL_1;
+const TYPE_B: EtherType = EtherType::LOCAL_EXPERIMENTAL_2;
 
 fn pair() -> Option<(String, String)> {
     Some((std::env::var("RAWETHER_TEST_IFACE").ok()?, std::env::var("RAWETHER_TEST_PEER").ok()?))
@@ -45,15 +47,20 @@ fn pair() -> Option<(String, String)> {
 fn rx_mode() -> RxMode {
     match std::env::var("RAWETHER_RX").as_deref() {
         Ok("plain") => RxMode::Plain,
+        Ok("frame") => RxMode::low_latency(),
         _ => RxMode::Auto,
     }
 }
 
 fn expected_path() -> RxPath {
-    if rx_mode() == RxMode::Plain { RxPath::Plain } else { RxPath::Ring }
+    match rx_mode() {
+        RxMode::Plain => RxPath::Plain,
+        RxMode::FrameRing(_) => RxPath::FrameRing,
+        _ => RxPath::Ring,
+    }
 }
 
-fn frame(dst: MacAddr, src: MacAddr, ethertype: u16, vlan: Option<u16>, seq: u32) -> Vec<u8> {
+fn frame(dst: MacAddr, src: MacAddr, ethertype: EtherType, vlan: Option<u16>, seq: u32) -> Vec<u8> {
     let mut b = FrameBuilder::new(dst, src, ethertype);
     if let Some(tci) = vlan {
         b = b.vlan(VlanTag::from_tci(TagKind::Customer, tci));
@@ -63,12 +70,12 @@ fn frame(dst: MacAddr, src: MacAddr, ethertype: u16, vlan: Option<u16>, seq: u32
     f
 }
 
-fn rx(peer: &str, types: &[u16]) -> Socket {
+fn rx(peer: &str, types: &[EtherType]) -> Socket {
     Config::new(peer).ethertypes(types).rx_mode(rx_mode()).open().unwrap()
 }
 
 fn tx(iface: &str) -> Socket {
-    Config::new(iface).ethertypes(&[0xffff]).rx_mode(RxMode::Plain).open().unwrap()
+    Config::new(iface).ethertypes([0xffffu16]).rx_mode(RxMode::Plain).open().unwrap()
 }
 
 /// Threat model T-03, T-04 (SR-003, SR-004): filtered in the kernel, tags as on the wire, lengths reported.
@@ -84,7 +91,7 @@ fn only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp() {
     t.send(&frame(dst, src, TYPE_A, Some(0x6005), 3)).unwrap();
 
     let p = r.recv(Some(Duration::from_secs(2))).unwrap().expect("untagged frame");
-    assert_eq!(&p.data()[12..14], &TYPE_A.to_be_bytes());
+    assert_eq!(&p.data()[12..14], &TYPE_A.0.to_be_bytes());
     assert_eq!(&p.data()[14..18], &2u32.to_be_bytes(), "the frame of the other type was filtered out");
     let ts = p.timestamp().expect("a timestamp");
     // The kernel's stamp, or — for the first frames after a socket enables timestamping, which
@@ -95,7 +102,7 @@ fn only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp() {
     let p = r.recv(Some(Duration::from_secs(2))).unwrap().expect("tagged frame");
     assert_eq!(&p.data()[12..14], &0x8100u16.to_be_bytes(), "the tag is where it was on the wire");
     assert_eq!(&p.data()[14..16], &0x6005u16.to_be_bytes());
-    assert_eq!(&p.data()[16..18], &TYPE_A.to_be_bytes());
+    assert_eq!(&p.data()[16..18], &TYPE_A.0.to_be_bytes());
     // Spec 002 story 1, scenario 4: the view reports the tag even when the driver stripped it
     // and rawether put it back.
     let f = p.frame().expect("a whole header");
@@ -110,7 +117,7 @@ fn only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp() {
 #[test]
 fn a_receive_times_out_and_a_nonblocking_one_returns_at_once() {
     let Some((_, peer)) = pair() else { return };
-    let mut r = rx(&peer, &[0x88b7]);
+    let mut r = rx(&peer, &[EtherType(0x88b7)]);
     let start = Instant::now();
     assert!(r.recv(Some(Duration::from_millis(50))).unwrap().is_none());
     let took = start.elapsed();
@@ -126,7 +133,7 @@ fn a_receive_times_out_and_a_nonblocking_one_returns_at_once() {
 fn a_multicast_group_is_joined_on_the_interface() {
     let Some((_, peer)) = pair() else { return };
     let group: MacAddr = "01:80:c2:00:00:0e".parse().unwrap();
-    let _s = Config::new(&peer).ethertypes(&[0x88cc]).join(group).open().unwrap();
+    let _s = Config::new(&peer).ethertypes([0x88ccu16]).join(group).open().unwrap();
     let table = std::fs::read_to_string("/proc/net/dev_mcast").unwrap();
     let hex = group.to_string().replace(':', "");
     assert!(table.lines().any(|l| l.contains(&peer) && l.contains(&hex)), "{table}");
@@ -174,7 +181,7 @@ fn a_short_snap_length_marks_the_frame_truncated_with_its_wire_length() {
     let Some((iface, peer)) = pair() else { return };
     let keep_20 = Program::new(vec![
         Insn::new(op::LD | op::H | op::ABS, 0, 0, 12),
-        Insn::new(op::JMP | op::JEQ | op::K, 0, 1, u32::from(TYPE_A)),
+        Insn::new(op::JMP | op::JEQ | op::K, 0, 1, u32::from(TYPE_A.0)),
         Insn::new(op::RET | op::K, 0, 0, 20),
         Insn::new(op::RET | op::K, 0, 0, 0),
     ])
@@ -242,7 +249,7 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
     let _etf = Etf(&iface);
     let mut r = rx(&peer, &[TYPE_A]);
     let mut timed = Config::new(&iface)
-        .ethertypes(&[0xffff])
+        .ethertypes([0xffffu16])
         .rx_mode(RxMode::Plain)
         .tx_time(rawether::TxTime::default())
         .open()
@@ -265,7 +272,7 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
     assert!(e.to_string().contains("launch time"), "{e}");
     let errors = timed.tx_errors().unwrap();
     assert_eq!((errors.invalid, errors.missed), (1, 0), "{errors:?}");
-    assert_eq!(timed.tx_errors().unwrap().total(), 0, "drained");
+    assert_eq!(timed.tx_errors().unwrap().dropped(), 0, "drained");
 }
 
 /// Threat model T-06 (SR-006).
@@ -288,6 +295,8 @@ fn the_steady_state_does_not_allocate() {
     // Spec 002 SC-003: a frame built into one reused buffer for every send.
     let builder = FrameBuilder::new(r.mac_address(), t.mac_address(), TYPE_A);
     let mut built = Vec::with_capacity(1518);
+    // Spec 007 FR-011: sending with transmit timestamps and reading them allocates nothing.
+    let mut st = stamped(&iface);
     for _ in 0..100 {
         t.send(&f).unwrap();
         while r.recv(Some(Duration::from_millis(20))).unwrap().is_some() {}
@@ -298,6 +307,9 @@ fn the_steady_state_does_not_allocate() {
         t.send(&f).unwrap();
         builder.write(&mut built, &k.to_be_bytes());
         t.send(&built).unwrap();
+        let id = st.next_tx_id();
+        st.send(&f).unwrap();
+        assert_eq!(st.tx_timestamp(Some(Duration::from_secs(1))).unwrap().map(|t| t.id), Some(id));
         while let Some(p) = r.recv(Some(Duration::from_millis(100))).unwrap() {
             seen += p.frame().map_or(0, |f| f.payload().len());
             if p.frame().is_some_and(|f| f.payload().starts_with(&k.to_be_bytes())) {
@@ -395,7 +407,7 @@ fn deleting_the_interface_ends_a_receive() {
 #[test]
 fn a_huge_timeout_waits_and_an_impossible_ring_is_refused() {
     let Some((_, peer)) = pair() else { return };
-    let mut r = Config::new(&peer).ethertypes(&[0x88b7]).nonblocking(true).open().unwrap();
+    let mut r = Config::new(&peer).ethertypes([0x88b7u16]).nonblocking(true).open().unwrap();
     assert!(r.recv(Some(Duration::MAX)).unwrap().is_none());
     let odd = rawether::RingConfig { block_size: 1 << 11, ..rawether::RingConfig::default() };
     let e = Config::new(&peer).rx_mode(RxMode::Ring(odd)).open().expect_err("not a page multiple");
@@ -418,7 +430,7 @@ fn a_launch_time_without_etf_is_sent_at_once() {
     let p = Pair::new("t").expect("a private veth pair (the main pair exists, so ip link works)");
     let mut r = rx(&p.1, &[TYPE_A]);
     let timed = Config::new(&p.0)
-        .ethertypes(&[0xffff])
+        .ethertypes([0xffffu16])
         .rx_mode(RxMode::Plain)
         .tx_time(rawether::TxTime::default())
         .open()
@@ -429,4 +441,175 @@ fn a_launch_time_without_etf_is_sent_at_once() {
     timed.send_at(&f, launch.as_nanos() as u64).unwrap();
     assert!(r.recv(Some(Duration::from_secs(2))).unwrap().is_some());
     assert!(start.elapsed() < Duration::from_millis(100), "held for {:?}", start.elapsed());
+}
+
+/// A socket on `iface` that sends with software transmit timestamps and receives nothing.
+fn stamped(iface: &str) -> Socket {
+    Config::new(iface)
+        .ethertypes([0xffffu16])
+        .rx_mode(rx_mode())
+        .tx_timestamping(rawether::Timestamping::Software)
+        .open()
+        .unwrap()
+}
+
+/// CPU time this thread has used, in clock ticks (`/proc/thread-self/stat`, utime + stime).
+fn cpu_ticks() -> u64 {
+    let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap();
+    let fields: Vec<&str> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+}
+
+/// Spec 007 SR-001: every frame, sent alone or in a batch, gets the transmit timestamp of the
+/// identifier the socket announced for it.
+#[test]
+fn transmit_timestamps_carry_the_announced_ids() {
+    let Some((iface, _)) = pair() else { return };
+    let mut s = stamped(&iface);
+    assert_eq!(s.tx_timestamping(), rawether::Timestamping::Software);
+    let f = frame(MacAddr::BROADCAST, s.mac_address(), TYPE_B, None, 0);
+    let before = rawether::clock_now(rawether::Clock::Realtime).unwrap();
+    let mut announced = Vec::new();
+    let mut got = Vec::new();
+    // Read as you go: the kernel keeps only a few hundred unread reports (its receive buffer).
+    let collect = |s: &mut Socket, got: &mut Vec<u32>, upto: usize| {
+        while got.len() < upto {
+            let t = s.tx_timestamp(Some(Duration::from_secs(2))).unwrap().expect("a timestamp per frame");
+            assert_eq!(t.timestamp.source, TimestampSource::Software);
+            assert!(t.timestamp.as_nanos() >= before.as_nanos() as i128, "not before the sends");
+            got.push(t.id);
+        }
+    };
+    for k in 0..1000u32 {
+        if k % 100 < 50 {
+            announced.push(s.next_tx_id());
+            s.send(&f).unwrap();
+        } else if k % 100 == 50 {
+            let batch = [f.as_slice(); 50];
+            let first = s.next_tx_id();
+            assert_eq!(s.send_batch(&batch).unwrap(), 50);
+            announced.extend((0..50).map(|i| first.wrapping_add(i)));
+            assert_eq!(s.next_tx_id(), first.wrapping_add(50));
+            collect(&mut s, &mut got, announced.len());
+        }
+    }
+    assert_eq!(announced.len(), 1000);
+    collect(&mut s, &mut got, 1000);
+    got.sort_unstable();
+    announced.sort_unstable();
+    assert_eq!(got, announced);
+    // Spec 007 US1 scenario 4: nothing waiting → None after the timeout, at once when non-blocking.
+    let start = Instant::now();
+    assert!(s.tx_timestamp(Some(Duration::from_millis(50))).unwrap().is_none());
+    assert!(start.elapsed() >= Duration::from_millis(45));
+    s.set_nonblocking(true).unwrap();
+    let start = Instant::now();
+    assert!(s.tx_timestamp(None).unwrap().is_none());
+    assert!(start.elapsed() < Duration::from_millis(20));
+    // Without transmit timestamps the call says how to turn them on.
+    let mut plain = tx(&iface);
+    assert_eq!(plain.tx_timestamp(None).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+}
+
+/// Spec 007 SR-003: unread timestamps are bounded and counted, and a receive does not spin while
+/// timestamps wait.
+#[test]
+fn unread_transmit_timestamps_are_bounded_and_receiving_does_not_spin() {
+    let Some((iface, _)) = pair() else { return };
+    let mut s = stamped(&iface);
+    let f = frame(MacAddr::BROADCAST, s.mac_address(), TYPE_B, None, 0);
+    for _ in 0..15 {
+        let batch = [f.as_slice(); 100];
+        s.send_batch(&batch).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        // A receive drains the error queue into the socket's own queue as it waits.
+        assert!(s.recv(Some(Duration::from_millis(1))).unwrap().is_none());
+    }
+    let batch = [f.as_slice(); 100];
+    s.send_batch(&batch).unwrap(); // left on the kernel's error queue
+    std::thread::sleep(Duration::from_millis(5));
+    let (start, cpu) = (Instant::now(), cpu_ticks());
+    assert!(s.recv(Some(Duration::from_millis(200))).unwrap().is_none());
+    assert!(start.elapsed() >= Duration::from_millis(190), "{:?}", start.elapsed());
+    assert!(cpu_ticks() - cpu <= 5, "receiving spun: {} ticks", cpu_ticks() - cpu);
+    let mut kept = 0;
+    while s.tx_timestamp(Some(Duration::ZERO)).unwrap().is_some() {
+        kept += 1;
+    }
+    assert_eq!(kept, 1024);
+    assert_eq!(s.tx_errors().unwrap().timestamps_lost, 1600 - 1024);
+}
+
+/// Spec 007 SR-001 scenario 2, SR-004: a launch time the qdisc refuses does not shift later
+/// identifiers, and launch-time reports and timestamps are both kept, whichever is read first.
+#[test]
+fn ids_stay_exact_after_a_refused_send_and_reports_coexist() {
+    let Some(_) = pair() else { return };
+    let p = Pair::new("s").expect("a private veth pair (the main pair exists, so ip link works)");
+    let ok = std::process::Command::new("tc")
+        .args(["qdisc", "replace", "dev", &p.0, "root", "etf", "clockid", "CLOCK_TAI", "delta", "200000"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        assert!(
+            std::env::var_os("RAWETHER_REQUIRE_ETF").is_none(),
+            "no etf qdisc, but RAWETHER_REQUIRE_ETF is set"
+        );
+        return;
+    }
+    let _etf = Etf(&p.0);
+    for timestamps_first in [true, false] {
+        let mut s = Config::new(&p.0)
+            .ethertypes([0xffffu16])
+            .rx_mode(RxMode::Plain)
+            .tx_time(rawether::TxTime::default())
+            .tx_timestamping(rawether::Timestamping::Software)
+            .open()
+            .unwrap();
+        let f = frame(MacAddr::BROADCAST, s.mac_address(), TYPE_A, None, 0);
+        let now = rawether::clock_now(rawether::Clock::Tai).unwrap();
+        let refused = s.next_tx_id();
+        assert!(s.send_at(&f, now.checked_sub(Duration::from_secs(1)).unwrap().as_nanos() as u64).is_err());
+        assert_eq!(s.next_tx_id(), refused, "a refused frame uses no identifier");
+        // Launch times far enough ahead that a loaded runner does not miss them (a missed one
+        // is dropped by etf and has no timestamp).
+        let now = rawether::clock_now(rawether::Clock::Tai).unwrap();
+        let mut announced = Vec::new();
+        for k in 0..10u64 {
+            announced.push(s.next_tx_id());
+            s.send_at(&f, (now + Duration::from_millis(50 + k)).as_nanos() as u64).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        let read_stamps = |s: &mut Socket| {
+            let mut ids: Vec<u32> =
+                std::iter::from_fn(|| s.tx_timestamp(Some(Duration::from_secs(1))).unwrap())
+                    .take(10)
+                    .map(|t| t.id)
+                    .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let (ids, errors) = if timestamps_first {
+            let ids = read_stamps(&mut s);
+            (ids, s.tx_errors().unwrap())
+        } else {
+            let errors = s.tx_errors().unwrap();
+            (read_stamps(&mut s), errors)
+        };
+        assert_eq!(ids, announced, "timestamps first: {timestamps_first}, {errors:?}");
+        assert_eq!((errors.invalid, errors.missed), (1, 0), "timestamps first: {timestamps_first}");
+    }
+}
+
+/// Spec 007 SR-002, FR-006/FR-007: veth stamps in software only, and says so.
+#[test]
+fn veth_reports_software_timestamping_and_no_hardware_clock() {
+    let Some((iface, _)) = pair() else { return };
+    let info = rawether::timestamp_info(&iface).unwrap();
+    assert!(info.software_rx && info.software_tx, "{info:?}");
+    assert!(!info.hardware_rx && !info.hardware_tx && info.phc_index.is_none(), "{info:?}");
+    assert_eq!(rawether::timestamp_info("no-such-if0").unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    let s = Config::new(&iface).tx_timestamping(rawether::Timestamping::Hardware).open().unwrap();
+    assert_eq!(s.tx_timestamping(), rawether::Timestamping::Software);
+    assert_eq!(s.timestamp_info().unwrap(), info);
 }

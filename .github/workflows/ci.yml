@@ -19,7 +19,7 @@ env:
 
 jobs:
   gates:
-    name: gates (fmt, lint on 5 targets, doc, deny, msrv, package, planning paths, workflows)
+    name: gates (fmt, lint on 7 targets, doc, deny, msrv, package, planning paths, workflows)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -29,7 +29,7 @@ jobs:
       - name: Toolchains
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt \
-            --target aarch64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-pc-windows-gnu,x86_64-unknown-freebsd,i686-unknown-linux-gnu
+            --target aarch64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-pc-windows-gnu,x86_64-unknown-freebsd,i686-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
           rustup toolchain install "$MSRV" --profile minimal
           rustup default stable
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
@@ -55,8 +55,12 @@ jobs:
           RAWETHER_REQUIRE_ETF: "1"
 
   macos:
-    name: tests (macos-15)
-    runs-on: macos-15
+    name: tests and the BPF suite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,8 +69,10 @@ jobs:
       - name: Toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo test
-      # With access to the BPF devices, the loopback test opens one instead of checking the error.
-      - run: sudo -E env "PATH=$PATH" cargo test --lib the_loopback_interface
+      # A feth pair made with sudo; the suite itself runs as the runner user with /dev/bpf* access.
+      - run: scripts/bpf-test.sh
+        env:
+          RAWETHER_REQUIRE_PAIR: "1"
 
   windows:
     name: build (windows-2025)
@@ -93,8 +99,8 @@ jobs:
           release: "14"
           usesh: true
           prepare: pkg install -y rust
-          # Unit tests, the BPF record layouts against FreeBSD's own header, and a build of the backend.
-          run: cargo test
+          # Unit tests, then the BPF suite on an epair, as root.
+          run: cargo test && RAWETHER_REQUIRE_PAIR=1 sh scripts/bpf-test.sh
 
   miri:
     name: miri (pure modules)

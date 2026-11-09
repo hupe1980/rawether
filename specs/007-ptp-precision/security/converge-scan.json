@@ -1,0 +1,347 @@
+{
+  "feature": "007-ptp-precision",
+  "commit": "4142732",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "Every transmit timestamp MUST carry the identifier the socket announced for its frame, also after a send the kernel refused (Linux 6.13 and later).",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "1 000 frames sent in single and batched sends with software transmit timestamps on veth",
+          "then": "their identifiers are exactly the announced ones",
+          "when": "the timestamps are read"
+        },
+        {
+          "given": "a send refused by an etf qdisc (past launch time)",
+          "then": "their timestamps carry the identifiers announced for them",
+          "when": "10 more frames are sent"
+        }
+      ],
+      "mitigations": [
+        "mitigation.explicit-ids"
+      ],
+      "tasks": [
+        {
+          "id": "T004",
+          "done": true,
+          "text": "[US1] [SR-001] src/sys/linux.rs: socket flags (`TX_SOFTWARE|SOFTWARE|OPT_ID|OPT_TSONLY`, plus `TX_HARDWARE|RAW_HARDWARE` when the NIC stamps); `send`, `send_at`, `send_batch` go through `sendmsg`/`sendmmsg` with an `SCM_TS_OPT_ID` cmsg (and `SCM_TXTIME` for `send_at`) when stamping; id mode Explicit\u2192Implicit on the kernel's `EINVAL` with one retry; `next_tx_id` wraps and advances per accepted frame"
+        },
+        {
+          "id": "T008",
+          "done": true,
+          "text": "[US1] [SR-001] tests/veth.rs: 1 000 frames (single and batched, both paths) \u2192 timestamps with exactly the announced ids, `Software`, not before the send; after an `etf`-refused send, the next 10 ids match (SR-001 scenario 2; with `RAWETHER_REQUIRE_ETF` in CI); `tx_timestamp(50 ms)` with nothing waiting returns `None` after \u2265 45 ms, and at once when non-blocking (US1 scenario 4); `next_tx_id` wraps (unit test)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/bpf.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          },
+          {
+            "path": "tests/veth.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "Requesting hardware transmit timestamps MUST NOT change a NIC whose configuration could not be read, MUST raise tx_type only from OFF to ON, and MUST leave every other tx_type and the receive filter rule of 0.1.0 unchanged.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "every tx_type 0..=3, rx_filter 0..=15, and receive/transmit requests",
+          "then": "a write raises tx_type only from OFF to ON, rx_filter only from NONE to ALL, and changes nothing else",
+          "when": "the decision runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.tx-read-first-never-lower"
+      ],
+      "tasks": [
+        {
+          "id": "T001",
+          "done": true,
+          "text": "[SR-002] src/hwtstamp.rs: `decide(current, want_rx, want_tx)`; a write only raises rx_filter NONE\u2192ALL (want_rx) and tx_type OFF\u2192ON (want_tx); `Effective { rx, tx }` from the final configuration; exhaustive test over flags \u00d7 tx_type 0..=3 \u00d7 rx_filter 0..=15 \u00d7 the four request combinations"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US3] [SR-002] src/sys/linux.rs: `hardware_timestamps` uses the new `decide` for receive and transmit together, one read and at most one write; `tx_timestamping()` reports the effective mode; veth: Hardware requested \u2192 Software reported"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/drop_capabilities.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/hwtstamp.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-003",
+      "statement": "Unread transmit timestamps MUST NOT make a receive spin, and rawether MUST keep at most a fixed number of them, counting the ones it drops.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a socket with transmit timestamps and 2 000 frames sent without reading their timestamps",
+          "then": "it returns after about 200 ms using little CPU, 1 024 timestamps can be read, and the lost count is the rest",
+          "when": "recv waits 200 ms with nothing to receive"
+        }
+      ],
+      "mitigations": [
+        "mitigation.bounded-report-queue"
+      ],
+      "tasks": [
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[US1] [SR-003] src/sys/linux.rs: bounded queue (1 024, preallocated) with `timestamps_lost`; `tx_timestamp(timeout)` waits on POLLERR only (events 0), surfaces socket errors; recv's error path fills the same queue"
+        },
+        {
+          "id": "T012",
+          "done": true,
+          "text": "[US4] [SR-003] [SR-004] tests/veth.rs: 2 000 unread stamps \u2192 `recv(200 ms)` returns after ~200 ms, 1 024 readable, `timestamps_lost` = 976; `etf` + stamping: refused launch time counted `invalid` = 1 and every sent frame's stamp read, in both reading orders"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-004",
+      "statement": "Reading transmit timestamps MUST NOT discard launch-time reports, and reading launch-time reports MUST NOT discard timestamps.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a socket with launch times and transmit timestamps through etf, one refused launch time and frames that left",
+          "then": "invalid = 1 and every sent frame's timestamp is there",
+          "when": "tx_errors and the timestamps are read in either order"
+        }
+      ],
+      "mitigations": [
+        "mitigation.one-dispatcher"
+      ],
+      "tasks": [
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-005] src/sys/linux.rs: one error-queue reader (`drain_error_queue`) classifying `PACKET_TX_TIMESTAMP` + `SCM_TIMESTAMPING` reports (origin TIMESTAMPING, `SCM_TSTAMP_SND`) into the queue and TXTIME reports into the counts, through `cmsg_payload`; a pure `classify` with unit tests"
+        },
+        {
+          "id": "T012",
+          "done": true,
+          "text": "[US4] [SR-003] [SR-004] tests/veth.rs: 2 000 unread stamps \u2192 `recv(200 ms)` returns after ~200 ms, 1 024 readable, `timestamps_lost` = 976; `etf` + stamping: refused launch time counted `invalid` = 1 and every sent frame's stamp read, in both reading orders"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-005",
+      "statement": "Error-queue control messages MUST be read only through the length-checked reader and ignored when the control buffer was truncated.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the error-queue reader",
+          "then": "every payload is read with cmsg_payload and MSG_CTRUNC skips the message (unit test of the classifier over hand-built reports)",
+          "when": "it is reviewed"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-report-cmsgs"
+      ],
+      "tasks": [
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-005] src/sys/linux.rs: one error-queue reader (`drain_error_queue`) classifying `PACKET_TX_TIMESTAMP` + `SCM_TIMESTAMPING` reports (origin TIMESTAMPING, `SCM_TSTAMP_SND`) into the queue and TXTIME reports into the counts, through `cmsg_payload`; a pure `classify` with unit tests"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-006",
+      "statement": "Requesting transmit timestamps on a platform without them MUST make open fail with Unsupported.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "macOS or FreeBSD",
+          "then": "Unsupported, naming transmit timestamps",
+          "when": "a socket with transmit timestamps opens"
+        }
+      ],
+      "mitigations": [
+        "mitigation.unsupported-is-an-error"
+      ],
+      "tasks": [
+        {
+          "id": "T013",
+          "done": true,
+          "text": "[US4] [SR-006] src/sys/bsd.rs: `tx_timestamping != Off` \u2192 `Unsupported` naming transmit timestamps; unit test on macOS"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.error-queue-starves-receive",
+    "threat.nic-tx-config-lowered",
+    "threat.timestamp-cmsg-overread",
+    "threat.tx-reports-lost",
+    "threat.tx-timestamp-misattributed",
+    "threat.unsupported-silently-ignored"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-003",
+      "summary": "Requirement 'SR-003' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-004",
+      "summary": "Requirement 'SR-004' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-005",
+      "summary": "Requirement 'SR-005' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-006",
+      "summary": "Requirement 'SR-006' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 6,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 6
+    },
+    "threats_by_severity": {
+      "high": 3,
+      "medium": 3
+    },
+    "mitigations": 6,
+    "requirements": 6,
+    "requirements_with_tasks": 6,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "high": 3,
+      "medium": 3
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

@@ -3,17 +3,17 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{Inner, clock_now, drop_capabilities};
+pub(crate) use linux::{Inner, clock_now, drop_capabilities, timestamp_info};
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 mod bsd;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-pub(crate) use bsd::{Inner, clock_now, drop_capabilities};
+pub(crate) use bsd::{Inner, clock_now, drop_capabilities, timestamp_info};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 mod unsupported;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-pub(crate) use unsupported::{Inner, clock_now, drop_capabilities};
+pub(crate) use unsupported::{Inner, clock_now, drop_capabilities, timestamp_info};
 
 /// When a wait of `timeout` started now ends. `None` for no timeout, and for one too large to
 /// represent, which is the same thing in practice (`Duration::MAX` means "forever").
@@ -69,13 +69,18 @@ pub(crate) mod unix {
         Timeout,
     }
 
-    /// Wait until `fd` is readable or reports an error, for at most `timeout` (`None`:
-    /// indefinitely). An interrupted wait is retried with what is left of the timeout.
-    pub(crate) fn wait(fd: BorrowedFd<'_>, timeout: Option<Duration>) -> io::Result<Ready> {
+    /// Wait until `fd` reports `events` (`POLLIN` for frames, 0 for the error queue only) or an
+    /// error, for at most `timeout` (`None`: indefinitely). An interrupted wait is retried with
+    /// what is left of the timeout.
+    pub(crate) fn wait(
+        fd: BorrowedFd<'_>,
+        timeout: Option<Duration>,
+        events: libc::c_short,
+    ) -> io::Result<Ready> {
         let deadline = super::deadline(timeout);
         loop {
             let ms = super::poll_ms(deadline.map(|d| d.saturating_duration_since(std::time::Instant::now())));
-            let mut p = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            let mut p = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
             // SAFETY: `p` is one valid `pollfd` and the count passed is 1.
             let n = unsafe { libc::poll(&raw mut p, 1, ms) };
             if n > 0 {

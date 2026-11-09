@@ -36,7 +36,7 @@ fn main() -> std::io::Result<()> {
             print!("  vlan {}", tag.vid());
         }
         println!(
-            "  type {:04x}  {} octets{}",
+            "  {}  {} octets{}",
             f.ethertype(),
             p.original_len(),
             if p.is_truncated() { " (truncated)" } else { "" },

@@ -19,7 +19,7 @@ On Linux, `Socket::open` follows an order chosen so that no frame slips past the
 
 1. **Create the socket with protocol 0.** An AF_PACKET socket with protocol 0 receives nothing until it is bound.
 2. **Attach the filter.** The EtherType set is compiled to classic BPF and attached with `SO_ATTACH_FILTER`.
-3. **Set up the ring.** `PACKET_VERSION` TPACKET_V3, head-room for VLAN tags, `PACKET_RX_RING`, then `mmap`. If the kernel refuses, `RxMode::Auto` uses the plain path; an explicit `RxMode::Ring` fails.
+3. **Set up the ring.** `PACKET_VERSION` TPACKET_V3, head-room for VLAN tags, `PACKET_RX_RING`, then `mmap`. If the kernel refuses, `RxMode::Auto` uses the plain path; an explicit `RxMode::Ring` fails. `RxMode::low_latency()` sets up a per-frame (TPACKET_V2) ring instead.
 4. **Bind to the interface.** Only now do frames start arriving, all of them already filtered.
 5. **Join groups and modes.** Multicast membership, all-multicast and promiscuous mode, if requested.
 6. **Socket options.** Timestamping, `SO_PRIORITY`, qdisc bypass, `SO_TXTIME`, non-blocking mode.
