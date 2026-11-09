@@ -14,7 +14,8 @@ if [[ "${1:-}" == "--docker" ]]; then
         rust:latest bash -c 'command -v ip >/dev/null || { apt-get -qq update && apt-get -qq install -y iproute2 >/dev/null; }; scripts/veth-test.sh --inside'
 fi
 
-run() { if [[ "${1}" == "--inside" ]]; then shift; "$@"; else sudo -E "$@"; fi; }
+# `run MODE CMD…`: as is inside the container, with sudo natively.
+run() { local mode=$1; shift; if [[ "$mode" == "--inside" ]]; then "$@"; else sudo -E "$@"; fi; }
 mode="${1:-}"
 
 run "$mode" ip link add rawether0 type veth peer name rawether1 2>/dev/null || true
