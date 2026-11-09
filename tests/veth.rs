@@ -161,6 +161,24 @@ fn a_hundred_thousand_frames_are_received_or_counted_as_dropped() {
     assert_eq!(stats.received, got);
 }
 
+/// SR-008: sparse traffic is kept too. At a low rate the kernel retires a block per frame, so
+/// the ring must have enough blocks to hold frames that arrive while the reader is busy.
+#[test]
+fn sparse_frames_wait_in_the_ring_while_the_reader_is_busy() {
+    let Some((iface, peer)) = pair() else { return };
+    let mut r = rx(&peer, &[TYPE_A]);
+    let t = tx(&iface);
+    for k in 0..50 {
+        t.send(&frame(r.mac_address(), t.mac_address(), TYPE_A, None, k)).unwrap();
+        std::thread::sleep(Duration::from_millis(3));
+    }
+    let mut got = 0;
+    while r.recv(Some(Duration::from_millis(200))).unwrap().is_some() {
+        got += 1;
+    }
+    assert_eq!(got, 50, "dropped {}", r.stats().unwrap().dropped);
+}
+
 /// SR-009: launch time is opt-in and its drops are reported.
 #[test]
 fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {

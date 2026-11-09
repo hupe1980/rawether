@@ -34,9 +34,14 @@ pub struct RingConfig {
 }
 
 impl Default for RingConfig {
-    /// Four blocks of 1 MiB, 2 KiB frame slots, 1 ms block timeout.
+    /// 64 blocks of 64 KiB (4 MiB), 2 KiB frame slots, 1 ms block timeout.
+    ///
+    /// Many small blocks rather than a few large ones: at a low frame rate the kernel retires a
+    /// block after `retire_ms` with whatever it holds — often one frame — so the number of
+    /// blocks is how many frames the ring keeps while the reader is busy. 64 blocks keep 64
+    /// sparse frames, and at line rate a 64 KiB block holds dozens of small frames.
     fn default() -> RingConfig {
-        RingConfig { block_size: 1 << 20, block_count: 4, frame_size: 2048, retire_ms: 1 }
+        RingConfig { block_size: 1 << 16, block_count: 64, frame_size: 2048, retire_ms: 1 }
     }
 }
 

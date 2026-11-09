@@ -4,7 +4,7 @@
 |---|---|---|
 | `Config` | `interface: String`, `filter: Filter`, `multicast: Vec<MacAddr>`, `all_multicast`, `promiscuous`, `rx: RxMode`, `timestamping: Timestamping`, `priority: Option<u32>`, `tx_time: Option<TxTime>`, `qdisc_bypass`, `nonblocking`, `restore_vlan` (default true), `buffer_size` | builder; validated in `Socket::open` |
 | `Filter` | `All` · `EtherTypes(Vec<u16>)` (tagged or not) · `Bpf(bpf::Program)` | an empty EtherType set is `InvalidInput` |
-| `RxMode` | `Auto` · `Ring { block_size, block_count, frame_size, retire_ms }` · `Plain` | `Auto` = ring of 4 blocks × 1 MiB, 2 KiB frame slots, block retire timeout 1 ms (the worst-case added latency at low traffic), falling back to plain; `Plain` has no added latency |
+| `RxMode` | `Auto` · `Ring { block_size, block_count, frame_size, retire_ms }` · `Plain` | `Auto` = ring of 64 blocks × 64 KiB, 2 KiB frame slots, block retire timeout 1 ms (the worst-case added latency at low traffic; at low rates a retired block may hold one frame, so the block count is the sparse-traffic capacity), falling back to plain; `Plain` has no added latency |
 | `RxPath` | `Ring` · `Plain` · `Bpf` | what `Socket::rx_path()` reports |
 | `Timestamping` | `Off` · `Software` (default) · `Hardware` | hardware falls back to software, never mislabelled |
 | `TxTime` | `clock: Clock (Tai, Monotonic, Realtime)`, `deadline: bool`, `report_errors: bool` | Linux only; elsewhere `Unsupported` at open |
