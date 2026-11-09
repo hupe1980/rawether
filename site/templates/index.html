@@ -126,7 +126,7 @@
       </article>
       <article class="card">
         <h3>Tested on a real kernel</h3>
-        <p>Kernel behaviour is checked in CI on Linux, macOS and FreeBSD, from drops under load to links going down; the parsers run under Miri and a fuzzer. The ring receives 2.8 M frames/s over veth, 1.6× libpcap.</p>
+        <p>Kernel behaviour is checked in CI on Linux, macOS and FreeBSD, from drops under load to links going down; the parsers run under Miri and a fuzzer. The block ring receives 2.8 M frames/s over veth, 1.8× libpcap; the frame ring answers in 15 µs.</p>
         <a href="{{ get_url(path='@/docs/performance.md') }}">Performance</a>
       </article>
     </div>

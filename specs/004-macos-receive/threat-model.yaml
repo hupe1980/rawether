@@ -105,7 +105,7 @@ threats:
     source: spec.md#Edge-Cases
     assets:
     - asset.platform-claims
-    status: open
+    status: mitigated
     actor: actor.maintainer
     disposition: threat
     elements:
@@ -121,7 +121,7 @@ mitigations:
   attributes:
     threats:
     - threat.silent-skip
-    status: required
+    status: verified
     kind: detective
     requirements:
     - SR-001
@@ -139,5 +139,15 @@ requirements:
     then: it fails naming the missing pair
     when: the suite starts
   tasks: []
-verification: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: tests/bpf.rs::pair; CI macos-15, macos-26, FreeBSD 14 with RAWETHER_REQUIRE_PAIR=1
+  result: pass
+  verdict: verified
+  justification: 'pair() asserts when RAWETHER_REQUIRE_PAIR is set and no pair is named; CI sets it on all three
+    BSD lanes, and the suite ran (6 tests) on each in PR #2.'
+  verified_at: '2026-11-09T15:30:05Z'
+  commit: '4142732'
 decisions: []

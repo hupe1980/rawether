@@ -142,7 +142,11 @@ fn joining_a_multicast_group_works_or_says_why() {
         Ok(_) => println!("multicast join: ok (root: {root})"),
         Err(e) => {
             println!("multicast join: {e} (root: {root})");
+            assert!(std::env::var_os("RAWETHER_EXPECT_JOIN").is_none(), "joining must work here: {e}");
             assert!(e.to_string().contains("SIOCADDMULTI"), "{e}");
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                assert!(e.to_string().contains("needs root"), "says what to do: {e}");
+            }
         }
     }
 }

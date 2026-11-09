@@ -208,7 +208,7 @@ threats:
     source: spec.md#User-Story-4
     assets:
     - asset.receive-availability
-    status: open
+    status: mitigated
     actor: actor.caller
     disposition: threat
     elements:
@@ -232,7 +232,7 @@ threats:
     source: spec.md#User-Story-3
     assets:
     - asset.host-time-sync
-    status: open
+    status: mitigated
     actor: actor.caller
     disposition: threat
     elements:
@@ -256,7 +256,7 @@ threats:
     source: spec.md#FR-008
     assets:
     - asset.process-memory
-    status: open
+    status: mitigated
     actor: actor.kernel
     disposition: threat
     elements:
@@ -280,7 +280,7 @@ threats:
     assets:
     - asset.tx-accounting
     - asset.tx-time-integrity
-    status: open
+    status: mitigated
     actor: actor.kernel
     disposition: threat
     elements:
@@ -303,7 +303,7 @@ threats:
     source: spec.md#User-Story-1
     assets:
     - asset.tx-time-integrity
-    status: open
+    status: mitigated
     actor: actor.kernel
     disposition: threat
     elements:
@@ -326,7 +326,7 @@ threats:
     source: spec.md#FR-010
     assets:
     - asset.tx-time-integrity
-    status: open
+    status: mitigated
     actor: actor.caller
     disposition: threat
     elements:
@@ -341,7 +341,7 @@ mitigations:
   attributes:
     threats:
     - threat.error-queue-starves-receive
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-003
@@ -354,7 +354,7 @@ mitigations:
   attributes:
     threats:
     - threat.timestamp-cmsg-overread
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-005
@@ -367,7 +367,7 @@ mitigations:
   attributes:
     threats:
     - threat.tx-timestamp-misattributed
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-001
@@ -380,7 +380,7 @@ mitigations:
   attributes:
     threats:
     - threat.tx-reports-lost
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-004
@@ -392,7 +392,7 @@ mitigations:
   attributes:
     threats:
     - threat.nic-tx-config-lowered
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-002
@@ -405,7 +405,7 @@ mitigations:
   attributes:
     threats:
     - threat.unsupported-silently-ignored
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-006
@@ -484,5 +484,66 @@ requirements:
     then: Unsupported, naming transmit timestamps
     when: a socket with transmit timestamps opens
   tasks: []
-verification: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: tests/veth.rs::transmit_timestamps_carry_the_announced_ids, ids_stay_exact_after_a_refused_send_and_reports_coexist
+    (CI ubuntu-24.04 with RAWETHER_REQUIRE_ETF=1)
+  result: pass
+  verdict: verified
+  justification: 1 000 single and batched sends return exactly the announced ids; after an etf refusal the next
+    10 frames carry the ids announced for them, on all three receive paths in CI.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: src/hwtstamp.rs::tests::the_nic_configuration_is_never_lowered
+  result: pass
+  verdict: verified
+  justification: 'Exhaustive over tx_type 0..=3, rx_filter 0..=15 and all requests: writes only widen rx NONE to
+    ALL and tx OFF to ON.'
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-003.2026-11-09
+  requirement: SR-003
+  method: test
+  evidence: tests/veth.rs::unread_transmit_timestamps_are_bounded_and_receiving_does_not_spin
+  result: pass
+  verdict: verified
+  justification: '2 000 unread stamps: recv waits about 200 ms with little CPU, at most 1 024 are queued, timestamps_lost
+    counts the rest.'
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-004.2026-11-09
+  requirement: SR-004
+  method: test
+  evidence: tests/veth.rs::ids_stay_exact_after_a_refused_send_and_reports_coexist (CI etf run)
+  result: pass
+  verdict: verified
+  justification: Through etf one refused launch time gives invalid = 1 and every sent frame keeps its timestamp,
+    reading tx_errors and timestamps in either order.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-005.2026-11-09
+  requirement: SR-005
+  method: test
+  evidence: src/sys/linux.rs::tests::a_short_control_message_is_skipped, only_launch_time_reports_are_counted, a_launch_time_and_an_id_fit_one_control_buffer
+  result: pass
+  verdict: verified
+  justification: Every payload is read through the checked cmsg reader; short and truncated control messages are
+    skipped; the classifier counts only launch-time origins.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
+- id: verification.sr-006.2026-11-09
+  requirement: SR-006
+  method: review
+  evidence: 'src/sys/bsd.rs open: tx_timestamping returns Unsupported naming transmit timestamps'
+  result: pass
+  verdict: verified
+  justification: The BSD backend refuses tx_timestamping with ErrorKind::Unsupported and a message naming it; compiled
+    and linted for macOS and FreeBSD in CI.
+  verified_at: '2026-11-09T15:30:06Z'
+  commit: '4142732'
 decisions: []

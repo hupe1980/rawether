@@ -60,5 +60,6 @@ never by the documentation alone.
 |---|---|
 | [007-ptp-precision](007-ptp-precision/spec.md) | Transmit timestamps with exact ids, PTP hardware clock discovery |
 | [015-ethertype](015-ethertype/spec.md) | Typed EtherType names (constitution 2.0.0) |
+| [016-low-latency-ring](016-low-latency-ring/spec.md) | TPACKET_V2 frame ring: per-frame wakeup, zero-copy, no loss |
 | [004-macos-receive](004-macos-receive/spec.md) | The BPF suite on macOS 15 and 26 and FreeBSD 14 |
 | [006-bench](006-bench/spec.md) | Published receive benchmarks |

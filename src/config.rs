@@ -48,6 +48,23 @@ impl Default for RingConfig {
     }
 }
 
+/// The geometry of a per-frame (TPACKET_V2) receive ring: one slot per frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameRingConfig {
+    /// Octets per slot, headers included (a multiple of 16, 128 to 65 536). A frame larger than
+    /// a slot, less about 80 octets of headers, is captured short and marked truncated.
+    pub frame_size: u32,
+    /// Slots in the ring: how many frames can wait while the reader is busy.
+    pub frame_count: u32,
+}
+
+impl Default for FrameRingConfig {
+    /// 4 096 slots of 2 048 octets (8 MiB): room for 1 500-octet frames and their headers.
+    fn default() -> FrameRingConfig {
+        FrameRingConfig { frame_size: 2048, frame_count: 4096 }
+    }
+}
+
 /// How received frames reach user space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RxMode {
@@ -58,8 +75,20 @@ pub enum RxMode {
     /// A TPACKET_V3 ring with this geometry. Opening fails if the kernel refuses it (Linux);
     /// other platforms have no ring and use their only path.
     Ring(RingConfig),
-    /// One `recvmsg` per frame: the lowest latency, the most system calls.
+    /// A per-frame TPACKET_V2 ring with this geometry: zero-copy like the block ring, but the
+    /// kernel hands over each frame as it arrives, so a lone frame is not held back by a block
+    /// timeout. The lowest latency without losing throughput. Opening fails if the kernel refuses
+    /// it (Linux); other platforms use their only path.
+    FrameRing(FrameRingConfig),
+    /// One `recvmsg` per frame: low latency, but one system call per frame.
     Plain,
+}
+
+impl RxMode {
+    /// A frame ring with the default geometry: for time-critical receivers.
+    pub const fn low_latency() -> RxMode {
+        RxMode::FrameRing(FrameRingConfig { frame_size: 2048, frame_count: 4096 })
+    }
 }
 
 /// Receive timestamps.
@@ -314,6 +343,21 @@ impl Config {
                 format!("ring geometry {r:?} is not usable"),
             ));
         }
+        if let RxMode::FrameRing(f) = self.rx
+            && (f.frame_count == 0
+                || f.frame_size % 16 != 0
+                || !(128..=65_536).contains(&f.frame_size)
+                || (f.frame_size as usize)
+                    .checked_mul(f.frame_count as usize)
+                    .is_none_or(|n| n > u32::MAX as usize))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "frame ring geometry {f:?} is not usable (slots: a multiple of 16, 128 to 65 536 octets)"
+                ),
+            ));
+        }
         Ok(())
     }
 }
@@ -333,6 +377,19 @@ mod tests {
         // Spec 003 SR-008: sizes that overflow are refused before any system call.
         let huge = RingConfig { block_size: 1 << 31, frame_size: 128, block_count: u32::MAX, retire_ms: 1 };
         assert!(Config::new("eth0").rx_mode(RxMode::Ring(huge)).validate().is_err());
+        // Spec 016 FR-005: frame ring geometries that cannot work are refused up front.
+        let frame = |frame_size, frame_count| {
+            Config::new("eth0")
+                .rx_mode(RxMode::FrameRing(FrameRingConfig { frame_size, frame_count }))
+                .validate()
+        };
+        assert!(frame(2048, 4096).is_ok());
+        assert!(frame(2050, 4096).is_err(), "not a multiple of 16");
+        assert!(frame(64, 4096).is_err(), "too small");
+        assert!(frame(1 << 17, 16).is_err(), "too large");
+        assert!(frame(2048, 0).is_err(), "no slots");
+        assert!(frame(65_536, u32::MAX).is_err(), "overflows");
+        assert_eq!(RxMode::low_latency(), RxMode::FrameRing(FrameRingConfig::default()));
         let none = RingConfig { block_count: 0, ..RingConfig::default() };
         assert!(Config::new("eth0").rx_mode(RxMode::Ring(none)).validate().is_err());
         assert!(Config::new("eth0").ethertypes::<EtherType>([]).program().is_err());

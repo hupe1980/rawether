@@ -18,6 +18,8 @@ All notable changes to rawether are listed here. The format follows
 - `TxErrors::timestamps_lost`; example `txstamp`.
 - The BPF suite runs on macOS 15, macOS 26 (`feth`) and FreeBSD 14 (`epair`) in CI.
 - Published receive benchmarks against `pcap` and `pnet_datalink` (website, `scripts/bench.sh`).
+- A low-latency per-frame receive ring: `RxMode::FrameRing(FrameRingConfig)` and
+  `RxMode::low_latency()` (TPACKET_V2, zero-copy), reported as `RxPath::FrameRing`.
 - `EtherType`: a typed EtherType with names for 21 well-known types (IEEE registry), `Display`
   as `PTP (0x88f7)`, and `is_length()`.
 
@@ -32,6 +34,9 @@ All notable changes to rawether are listed here. The format follows
 
 - Builds for musl targets (an ioctl request is now cast to the libc's own type); CI lints
   `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
+- Joining a multicast group on FreeBSD failed with `EINVAL`: the request is now a link-layer
+  address (`AF_LINK`). On macOS, where joining needs root, the error says so and names
+  `promiscuous(true)` as the alternative.
 
 ## [0.1.0] - 2026-11-09
 

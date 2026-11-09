@@ -41,3 +41,6 @@ bin=$(cargo test --test bpf --no-run --message-format=json 2>/dev/null \
 [ -n "$bin" ] || { echo "could not build tests/bpf.rs" >&2; exit 1; }
 echo "==> BPF suite on $a/$b as uid $(id -u)"
 RAWETHER_TEST_IFACE=$a RAWETHER_TEST_PEER=$b "$bin" --test-threads=1 --nocapture
+echo "==> multicast membership as root"
+$SUDO env RAWETHER_TEST_IFACE="$a" RAWETHER_TEST_PEER="$b" RAWETHER_EXPECT_JOIN=1 \
+    "$bin" --exact joining_a_multicast_group_works_or_says_why --nocapture

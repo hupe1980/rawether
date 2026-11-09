@@ -61,6 +61,8 @@ sock.send(&buf)?;
 - 🎯 **Filtered in the kernel.** A set of EtherTypes — untagged, 802.1Q, 802.1ad or double-tagged
   — compiles to classic BPF and is attached *before* the socket is bound, so no unwanted frame is
   ever queued. Or bring your own program; `bpf::Program::run` interprets it for tests.
+- ⚡ **Low latency without loss.** `RxMode::low_latency()` hands each frame over as it
+  arrives, from a zero-copy per-frame ring: microseconds, at ring throughput.
 - 🌀 **Zero-copy receive.** On Linux a TPACKET_V3 ring hands out frames borrowed from shared
   memory; a frame's borrow ends at the next receive, enforced by the compiler. Falls back to
   `recvmsg` when the kernel refuses the ring, and says which path it is on.
@@ -85,8 +87,8 @@ sock.send(&buf)?;
   capability for the whole process once the sockets are open, or refuses if another thread
   would keep one.
 - 🧱 **No allocation in the steady state**, measured by a counting allocator.
-- 📈 **Measured.** The ring receives 2.8 M frames/s without loss over veth, 1.6× libpcap; the
-  plain path answers in 15 µs ([benchmarks](https://hupe1980.github.io/rawether/docs/performance/)).
+- 📈 **Measured.** The block ring receives 2.8 M frames/s without loss over veth, 1.8×
+  libpcap; the frame ring answers in 15 µs and still loses nothing ([benchmarks](https://hupe1980.github.io/rawether/docs/performance/)).
 
 ## 🖥️ Platforms
 
@@ -94,7 +96,7 @@ sock.send(&buf)?;
 |---|---|---|
 | EtherType filter, tagged or not; custom classic BPF | ✓ in kernel | ✓ in kernel |
 | Multicast membership · all-multicast · promiscuous | ✓ · ✓ · ✓ | ✓ · via promiscuous · ✓ |
-| Receive | TPACKET_V3 ring, `recvmsg` fallback | read buffer |
+| Receive | TPACKET_V3 block ring or V2 frame ring, `recvmsg` fallback | read buffer |
 | Timestamps | hardware or software, labelled | software |
 | Stripped VLAN tags put back | ✓ | not needed |
 | Batched send | `sendmmsg` | loop |

@@ -46,7 +46,7 @@ A NIC normally drops frames that are not addressed to it. Three settings widen t
 
 | Setting | Receives | Notes |
 |---|---|---|
-| `.join(group)` | Frames to one multicast MAC | For example `01:80:c2:00:00:0e` for LLDP or `01:1b:19:00:00:00` for PTP. `open` fails with `InvalidInput` if the address does not have the group bit set |
+| `.join(group)` | Frames to one multicast MAC | For example `01:80:c2:00:00:0e` for LLDP or `01:1b:19:00:00:00` for PTP. `open` fails with `InvalidInput` if the address does not have the group bit set. On macOS joining needs root ([details](@/docs/macos-freebsd.md)) |
 | `.all_multicast(true)` | Every multicast frame | On macOS and FreeBSD this turns on promiscuous mode, because BPF has no separate all-multicast mode |
 | `.promiscuous(true)` | Every frame on the segment | Including other hosts' unicast traffic |
 

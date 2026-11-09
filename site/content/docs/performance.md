@@ -1,6 +1,6 @@
 +++
 title = "Performance"
-description = "Receive throughput and latency of rawether's ring and plain paths against libpcap (the pcap crate) and pnet_datalink, measured over a veth pair, with the method and the command to reproduce it."
+description = "Receive throughput and latency of rawether's block ring, frame ring and plain paths against libpcap (the pcap crate) and pnet_datalink, measured over a veth pair, with the method and the command to reproduce it."
 weight = 125
 
 [extra]
@@ -11,15 +11,16 @@ Measured on 2026-11-09 with `scripts/bench.sh --docker`: Linux 7.0.14 (Docker De
 
 | Receiver | Frames/s received | Received of 500 000 | Latency p50 | p99 | max |
 |---|---|---|---|---|---|
-| rawether, ring (default) | 2 779 k | 100.0 % | 550 µs | 974 µs | 1 199 µs |
-| rawether, plain (`recvmsg`) | 987 k | 50.5 % | 15 µs | 30 µs | 137 µs |
-| pcap 2 (libpcap, immediate mode) | 1 763 k | 100.0 % | 15 µs | 48 µs | 352 µs |
-| pnet_datalink 0.35 | 1 189 k | 56.1 % | 17 µs | 37 µs | 102 µs |
+| rawether, block ring (default) | 2 774 k | 100.0 % | 513 µs | 949 µs | 1 157 µs |
+| rawether, frame ring (`RxMode::low_latency()`) | 1 661 k | 100.0 % | 15 µs | 41 µs | 108 µs |
+| rawether, plain (`recvmsg`) | 968 k | 50.5 % | 16 µs | 40 µs | 130 µs |
+| pcap 2 (libpcap, immediate mode) | 1 563 k | 100.0 % | 15 µs | 35 µs | 135 µs |
+| pnet_datalink 0.35 | 1 223 k | 57.2 % | 16 µs | 47 µs | 1 896 µs |
 
 ## Reading the numbers
 
-- **Throughput: use the ring.** The TPACKET_V3 ring keeps up with a saturating sender and receives every frame, at about 1.6× libpcap's rate. Paths that copy one frame per system call (rawether plain, pnet) fall behind and the kernel drops the rest. Those drops are counted, not hidden: see `stats()`.
-- **Latency: use the plain path.** A ring hands over a block when it is full or when `retire_ms` (1 ms) expires, so a lone frame waits up to a millisecond. `RxMode::Plain` wakes per frame, at about 15 µs. libpcap's immediate mode gets both by switching to a per-frame ring (TPACKET_V2).
+- **Throughput: the block ring.** The TPACKET_V3 ring keeps up with a saturating sender and receives every frame, at about 1.8× libpcap's rate. Paths that copy one frame per system call (rawether plain, pnet) fall behind and the kernel drops the rest. Those drops are counted, not hidden: see `stats()`.
+- **Latency: the frame ring.** A block ring hands over a block when it is full or when `retire_ms` (1 ms) expires, so a lone frame waits up to a millisecond. The TPACKET_V2 frame ring wakes per frame, at about 15 µs, and still receives every frame at saturation: the same design as libpcap's immediate mode, slightly faster. The plain path has the same latency but drops at saturation.
 - **These are comparisons on one machine.** Docker Desktop runs a VM, so absolute numbers on bare metal will differ.
 
 ## Method

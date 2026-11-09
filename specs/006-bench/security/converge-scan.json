@@ -1,0 +1,102 @@
+{
+  "feature": "006-bench",
+  "commit": "4142732",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "Every published number MUST come from a recorded harness run whose date, environment, command and method are on the page, with the same sender and traffic for every receiver.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the performance page",
+          "then": "every number matches the recorded run, and the method lists sender, traffic and filters per receiver",
+          "when": "it is reviewed against the harness output"
+        }
+      ],
+      "mitigations": [
+        "mitigation.recorded-runs"
+      ],
+      "tasks": [
+        {
+          "id": "T003",
+          "done": true,
+          "text": "[SR-001] Run it; site/content/docs/performance.md with the table, date, kernel, CPU, command and method; README and landing link"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/bpf.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "bench/src/main.rs",
+            "exists": true
+          },
+          {
+            "path": "site/content/docs/performance.md",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.misleading-numbers"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 1,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 1
+    },
+    "threats_by_severity": {
+      "medium": 1
+    },
+    "mitigations": 1,
+    "requirements": 1,
+    "requirements_with_tasks": 1,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "medium": 1
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

@@ -1,0 +1,166 @@
+{
+  "feature": "016-low-latency-ring",
+  "commit": "4142732",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "The frame-ring walker MUST NOT form a slice outside the slot, and MUST NOT read a slot whose status lacks TP_STATUS_USER.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "synthetic slots with tp_mac below the header, tp_mac or tp_snaplen past the slot, and a kernel-owned status",
+          "then": "no frame is formed",
+          "when": "they are read"
+        },
+        {
+          "given": "random slots",
+          "then": "no panic, no out-of-bounds access",
+          "when": "fuzzed and run under Miri"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-slot-walk"
+      ],
+      "tasks": [
+        {
+          "id": "T002",
+          "done": true,
+          "text": "[SR-001] src/ring.rs: `frame2` layout and `FrameMeta::read_v2(slot)`; unit tests: a good slot, tp_mac below the header, snaplen past the slot, kernel-owned status"
+        },
+        {
+          "id": "T003",
+          "done": true,
+          "text": "[SR-001] [SR-002] src/sys/linux.rs: `FrameRing` (setup with TPACKET_V2, PACKET_RESERVE, PACKET_TIMESTAMP, tpacket_req, mmap with MAP_LOCKED fallback, free on failure); `frame_ring_next` (acquire status, skip outgoing, VLAN re-insertion in the head-room, timestamps, release on next receive); recv, rx_path; explicit failure \u2192 error"
+        },
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[SR-001] src/lib.rs fuzzing hook and fuzz/fuzz_targets/ring_walk.rs read V2 slots too"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/bpf.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/ring.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "Every frame-ring slot the reader takes MUST be returned to the kernel by the next receive, whether it was delivered or skipped.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the veth suite on the frame ring (100 000-frame flood, sparse frames, malformed-free traffic)",
+          "then": "received plus dropped equals sent and later frames keep arriving",
+          "when": "it runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.release-every-slot"
+      ],
+      "tasks": [
+        {
+          "id": "T003",
+          "done": true,
+          "text": "[SR-001] [SR-002] src/sys/linux.rs: `FrameRing` (setup with TPACKET_V2, PACKET_RESERVE, PACKET_TIMESTAMP, tpacket_req, mmap with MAP_LOCKED fallback, free on failure); `frame_ring_next` (acquire status, skip outgoing, VLAN re-insertion in the head-room, timestamps, release on next receive); recv, rx_path; explicit failure \u2192 error"
+        },
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[SR-002] tests/veth.rs `RAWETHER_RX=frame`; scripts/veth-test.sh runs ring, plain and frame"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/drop_capabilities.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.slot-never-released",
+    "threat.slot-offsets-out-of-bounds"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 2,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 2
+    },
+    "threats_by_severity": {
+      "medium": 2
+    },
+    "mitigations": 2,
+    "requirements": 2,
+    "requirements_with_tasks": 2,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "medium": 2
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

@@ -92,7 +92,7 @@ mod vlan;
 use std::io;
 use std::time::Duration;
 
-pub use config::{Clock, Config, Filter, RingConfig, RxMode, Timestamping, TxTime};
+pub use config::{Clock, Config, Filter, FrameRingConfig, RingConfig, RxMode, Timestamping, TxTime};
 pub use ethertype::EtherType;
 pub use frame::{Frame, FrameBuilder, TagKind, VlanTag};
 pub use packet::{
@@ -341,6 +341,13 @@ pub mod fuzzing {
             {
                 let _ = crate::vlan::reinsert(region, 4, len, tpid, tci);
             }
+        }
+    }
+
+    /// Read a per-frame ring slot as the frame ring does.
+    pub fn frame_slot(slot: &[u8]) {
+        if let Some(m) = crate::ring::FrameMeta::read_v2(slot) {
+            assert!(m.mac + m.snaplen <= slot.len());
         }
     }
 

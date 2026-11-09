@@ -1,6 +1,6 @@
 # Threat Model: BSD receive proven
 
-**Feature**: `004-macos-receive` · **Generated**: 2026-11-09T14:09:00Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
+**Feature**: `004-macos-receive` · **Generated**: 2026-11-09T14:09:25Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
 
 > Rendered by ThreatSpec. Edit `threat-model.yaml`, not this file.
 
@@ -55,7 +55,7 @@ flowchart LR
 
 | ID | Threat | Category | Technique | Severity | Status | Mitigations | Mappings | Source |
 |---|---|---|---|---|---|---|---|---|
-| `threat.silent-skip` | The BSD suite skips silently in CI when the pair cannot be created, so a green lane claims receive works when nothing ran | Repudiation | missing-audit-trail | **medium** | open | `mitigation.require-pair` |  | spec.md#Edge-Cases |
+| `threat.silent-skip` | The BSD suite skips silently in CI when the pair cannot be created, so a green lane claims receive works when nothing ran | Repudiation | missing-audit-trail | **medium** | mitigated | `mitigation.require-pair` |  | spec.md#Edge-Cases |
 
 ### Techniques evaluated without findings
 
@@ -76,14 +76,15 @@ flowchart LR
 
 | ID | Mitigation | Kind | Threats | Requirements | Touchpoints | Status |
 |---|---|---|---|---|---|---|
-| `mitigation.require-pair` | RAWETHER_REQUIRE_PAIR in CI makes a missing pair a failure | detective | `threat.silent-skip` | SR-001 | `tests/bpf.rs`, `.github/workflows/ci.yml` | required |
+| `mitigation.require-pair` | RAWETHER_REQUIRE_PAIR in CI makes a missing pair a failure | detective | `threat.silent-skip` | SR-001 | `tests/bpf.rs`, `.github/workflows/ci.yml` | verified |
 
 ## Security Requirements
 
-### SR-001 (P2) — unverified
+### SR-001 (P2) — verified
 
 In CI the BSD suite MUST fail, not skip, when its interface pair is missing.
 
 - **Given** RAWETHER_REQUIRE_PAIR set and no pair, **when** the suite starts, **then** it fails naming the missing pair
 - Mitigations: `mitigation.require-pair`
-- Tasks: — none —
+- Tasks: T001 ✓
+- Verification `verification.sr-001.2026-11-09`: test → pass (verified) — `tests/bpf.rs::pair; CI macos-15, macos-26, FreeBSD 14 with RAWETHER_REQUIRE_PAIR=1`

@@ -81,12 +81,12 @@ flowchart LR
 
 | ID | Threat | Category | Technique | Severity | Status | Mitigations | Mappings | Source |
 |---|---|---|---|---|---|---|---|---|
-| `threat.error-queue-starves-receive` | Unread transmit timestamps keep the socket's error flag raised, so a receive spins a core, or an unbounded buffer of them grows without limit | Denial of Service | resource-exhaustion | **high** | open | `mitigation.bounded-report-queue` |  | spec.md#User-Story-4 |
-| `threat.nic-tx-config-lowered` | Requesting hardware transmit stamps changes the NIC's transmit mode under ptp4l (turning it off or out of a one-step mode), breaking the host's time synchronisation | Tampering, Denial of Service | data-tampering-in-transit | **high** | open | `mitigation.tx-read-first-never-lower` |  | spec.md#User-Story-3 |
-| `threat.tx-timestamp-misattributed` | A send the kernel refuses after numbering it shifts the kernel's counter, so rawether hands the caller a transmit time belonging to a different frame and a PTP clock computes a wrong offset | Tampering | data-tampering-in-transit | **high** | open | `mitigation.explicit-ids` |  | spec.md#User-Story-1 |
-| `threat.timestamp-cmsg-overread` | An error-queue report whose control messages are shorter than the timestamp or error structure read from them makes rawether read past the message | Tampering | injection | **medium** | open | `mitigation.checked-report-cmsgs` |  | spec.md#FR-008 |
-| `threat.tx-reports-lost` | Reading transmit timestamps discards launch-time drop reports, or counting drops discards timestamps, so the caller loses one of them silently | Repudiation | injection | **medium** | open | `mitigation.one-dispatcher` |  | spec.md#User-Story-4 |
-| `threat.unsupported-silently-ignored` | On macOS or FreeBSD a request for transmit timestamps is ignored, and a caller waiting for them blocks or gets none without knowing why | Denial of Service | resource-exhaustion | **medium** | open | `mitigation.unsupported-is-an-error` |  | spec.md#FR-010 |
+| `threat.error-queue-starves-receive` | Unread transmit timestamps keep the socket's error flag raised, so a receive spins a core, or an unbounded buffer of them grows without limit | Denial of Service | resource-exhaustion | **high** | mitigated | `mitigation.bounded-report-queue` |  | spec.md#User-Story-4 |
+| `threat.nic-tx-config-lowered` | Requesting hardware transmit stamps changes the NIC's transmit mode under ptp4l (turning it off or out of a one-step mode), breaking the host's time synchronisation | Tampering, Denial of Service | data-tampering-in-transit | **high** | mitigated | `mitigation.tx-read-first-never-lower` |  | spec.md#User-Story-3 |
+| `threat.tx-timestamp-misattributed` | A send the kernel refuses after numbering it shifts the kernel's counter, so rawether hands the caller a transmit time belonging to a different frame and a PTP clock computes a wrong offset | Tampering | data-tampering-in-transit | **high** | mitigated | `mitigation.explicit-ids` |  | spec.md#User-Story-1 |
+| `threat.timestamp-cmsg-overread` | An error-queue report whose control messages are shorter than the timestamp or error structure read from them makes rawether read past the message | Tampering | injection | **medium** | mitigated | `mitigation.checked-report-cmsgs` |  | spec.md#FR-008 |
+| `threat.tx-reports-lost` | Reading transmit timestamps discards launch-time drop reports, or counting drops discards timestamps, so the caller loses one of them silently | Repudiation | injection | **medium** | mitigated | `mitigation.one-dispatcher` |  | spec.md#User-Story-4 |
+| `threat.unsupported-silently-ignored` | On macOS or FreeBSD a request for transmit timestamps is ignored, and a caller waiting for them blocks or gets none without knowing why | Denial of Service | resource-exhaustion | **medium** | mitigated | `mitigation.unsupported-is-an-error` |  | spec.md#FR-010 |
 
 ### Techniques evaluated without findings
 
@@ -105,60 +105,66 @@ flowchart LR
 
 | ID | Mitigation | Kind | Threats | Requirements | Touchpoints | Status |
 |---|---|---|---|---|---|---|
-| `mitigation.bounded-report-queue` | Drain the error queue into a preallocated, bounded queue on every POLLERR; drop the oldest and count | preventive | `threat.error-queue-starves-receive` | SR-003 | `src/sys/linux.rs` | required |
-| `mitigation.checked-report-cmsgs` | Read scm_timestamping and sock_extended_err only through the length-checked cmsg reader; ignore truncated buffers | preventive | `threat.timestamp-cmsg-overread` | SR-005 | `src/sys/linux.rs` | required |
-| `mitigation.explicit-ids` | Assign each frame's id in user space and pass it with SCM_TS_OPT_ID (Linux 6.13+), detected by the kernel accepting it; announce ids before the send | preventive | `threat.tx-timestamp-misattributed` | SR-001 | `src/sys/linux.rs`, `tests/veth.rs` | required |
-| `mitigation.one-dispatcher` | One error-queue reader classifies every report: timestamps to the queue, launch-time reports to the counts | preventive | `threat.tx-reports-lost` | SR-004 | `src/sys/linux.rs` | required |
-| `mitigation.tx-read-first-never-lower` | Raise tx_type only from OFF to ON, after a successful read; never touch one-step modes | preventive | `threat.nic-tx-config-lowered` | SR-002 | `src/hwtstamp.rs`, `src/sys/linux.rs` | required |
-| `mitigation.unsupported-is-an-error` | open fails with Unsupported when transmit timestamps are requested on BPF | preventive | `threat.unsupported-silently-ignored` | SR-006 | `src/sys/bsd.rs` | required |
+| `mitigation.bounded-report-queue` | Drain the error queue into a preallocated, bounded queue on every POLLERR; drop the oldest and count | preventive | `threat.error-queue-starves-receive` | SR-003 | `src/sys/linux.rs` | verified |
+| `mitigation.checked-report-cmsgs` | Read scm_timestamping and sock_extended_err only through the length-checked cmsg reader; ignore truncated buffers | preventive | `threat.timestamp-cmsg-overread` | SR-005 | `src/sys/linux.rs` | verified |
+| `mitigation.explicit-ids` | Assign each frame's id in user space and pass it with SCM_TS_OPT_ID (Linux 6.13+), detected by the kernel accepting it; announce ids before the send | preventive | `threat.tx-timestamp-misattributed` | SR-001 | `src/sys/linux.rs`, `tests/veth.rs` | verified |
+| `mitigation.one-dispatcher` | One error-queue reader classifies every report: timestamps to the queue, launch-time reports to the counts | preventive | `threat.tx-reports-lost` | SR-004 | `src/sys/linux.rs` | verified |
+| `mitigation.tx-read-first-never-lower` | Raise tx_type only from OFF to ON, after a successful read; never touch one-step modes | preventive | `threat.nic-tx-config-lowered` | SR-002 | `src/hwtstamp.rs`, `src/sys/linux.rs` | verified |
+| `mitigation.unsupported-is-an-error` | open fails with Unsupported when transmit timestamps are requested on BPF | preventive | `threat.unsupported-silently-ignored` | SR-006 | `src/sys/bsd.rs` | verified |
 
 ## Security Requirements
 
-### SR-001 (P1) — unverified
+### SR-001 (P1) — verified
 
 Every transmit timestamp MUST carry the identifier the socket announced for its frame, also after a send the kernel refused (Linux 6.13 and later).
 
 - **Given** 1 000 frames sent in single and batched sends with software transmit timestamps on veth, **when** the timestamps are read, **then** their identifiers are exactly the announced ones
 - **Given** a send refused by an etf qdisc (past launch time), **when** 10 more frames are sent, **then** their timestamps carry the identifiers announced for them
 - Mitigations: `mitigation.explicit-ids`
-- Tasks: T004, T008
+- Tasks: T004 ✓, T008 ✓
+- Verification `verification.sr-001.2026-11-09`: test → pass (verified) — `tests/veth.rs::transmit_timestamps_carry_the_announced_ids, ids_stay_exact_after_a_refused_send_and_reports_coexist (CI ubuntu-24.04 with RAWETHER_REQUIRE_ETF=1)`
 
-### SR-002 (P1) — unverified
+### SR-002 (P1) — verified
 
 Requesting hardware transmit timestamps MUST NOT change a NIC whose configuration could not be read, MUST raise tx_type only from OFF to ON, and MUST leave every other tx_type and the receive filter rule of 0.1.0 unchanged.
 
 - **Given** every tx_type 0..=3, rx_filter 0..=15, and receive/transmit requests, **when** the decision runs, **then** a write raises tx_type only from OFF to ON, rx_filter only from NONE to ALL, and changes nothing else
 - Mitigations: `mitigation.tx-read-first-never-lower`
-- Tasks: T001, T011
+- Tasks: T001 ✓, T011 ✓
+- Verification `verification.sr-002.2026-11-09`: test → pass (verified) — `src/hwtstamp.rs::tests::the_nic_configuration_is_never_lowered`
 
-### SR-003 (P1) — unverified
+### SR-003 (P1) — verified
 
 Unread transmit timestamps MUST NOT make a receive spin, and rawether MUST keep at most a fixed number of them, counting the ones it drops.
 
 - **Given** a socket with transmit timestamps and 2 000 frames sent without reading their timestamps, **when** recv waits 200 ms with nothing to receive, **then** it returns after about 200 ms using little CPU, 1 024 timestamps can be read, and the lost count is the rest
 - Mitigations: `mitigation.bounded-report-queue`
-- Tasks: T006, T012
+- Tasks: T006 ✓, T012 ✓
+- Verification `verification.sr-003.2026-11-09`: test → pass (verified) — `tests/veth.rs::unread_transmit_timestamps_are_bounded_and_receiving_does_not_spin`
 
-### SR-004 (P2) — unverified
+### SR-004 (P2) — verified
 
 Reading transmit timestamps MUST NOT discard launch-time reports, and reading launch-time reports MUST NOT discard timestamps.
 
 - **Given** a socket with launch times and transmit timestamps through etf, one refused launch time and frames that left, **when** tx_errors and the timestamps are read in either order, **then** invalid = 1 and every sent frame's timestamp is there
 - Mitigations: `mitigation.one-dispatcher`
-- Tasks: T005, T012
+- Tasks: T005 ✓, T012 ✓
+- Verification `verification.sr-004.2026-11-09`: test → pass (verified) — `tests/veth.rs::ids_stay_exact_after_a_refused_send_and_reports_coexist (CI etf run)`
 
-### SR-005 (P2) — unverified
+### SR-005 (P2) — verified
 
 Error-queue control messages MUST be read only through the length-checked reader and ignored when the control buffer was truncated.
 
 - **Given** the error-queue reader, **when** it is reviewed, **then** every payload is read with cmsg_payload and MSG_CTRUNC skips the message (unit test of the classifier over hand-built reports)
 - Mitigations: `mitigation.checked-report-cmsgs`
-- Tasks: T005
+- Tasks: T005 ✓
+- Verification `verification.sr-005.2026-11-09`: test → pass (verified) — `src/sys/linux.rs::tests::a_short_control_message_is_skipped, only_launch_time_reports_are_counted, a_launch_time_and_an_id_fit_one_control_buffer`
 
-### SR-006 (P2) — unverified
+### SR-006 (P2) — verified
 
 Requesting transmit timestamps on a platform without them MUST make open fail with Unsupported.
 
 - **Given** macOS or FreeBSD, **when** a socket with transmit timestamps opens, **then** Unsupported, naming transmit timestamps
 - Mitigations: `mitigation.unsupported-is-an-error`
-- Tasks: T013
+- Tasks: T013 ✓
+- Verification `verification.sr-006.2026-11-09`: review → pass (verified) — `src/sys/bsd.rs open: tx_timestamping returns Unsupported naming transmit timestamps`

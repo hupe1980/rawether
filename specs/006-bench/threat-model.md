@@ -1,6 +1,6 @@
 # Threat Model: Published benchmarks
 
-**Feature**: `006-bench` · **Generated**: 2026-11-09T14:11:04Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
+**Feature**: `006-bench` · **Generated**: 2026-11-09T14:11:05Z · **Profiles**: stride · **Canonical**: `threat-model.yaml`
 
 > Rendered by ThreatSpec. Edit `threat-model.yaml`, not this file.
 
@@ -55,7 +55,7 @@ flowchart LR
 
 | ID | Threat | Category | Technique | Severity | Status | Mitigations | Mappings | Source |
 |---|---|---|---|---|---|---|---|---|
-| `threat.misleading-numbers` | Published numbers cannot be traced to a run or a method, or compare libraries unfairly, misleading readers | Repudiation | missing-audit-trail | **medium** | open | `mitigation.recorded-runs` |  | spec.md#SC-002 |
+| `threat.misleading-numbers` | Published numbers cannot be traced to a run or a method, or compare libraries unfairly, misleading readers | Repudiation | missing-audit-trail | **medium** | mitigated | `mitigation.recorded-runs` |  | spec.md#SC-002 |
 
 ### Techniques evaluated without findings
 
@@ -76,14 +76,15 @@ flowchart LR
 
 | ID | Mitigation | Kind | Threats | Requirements | Touchpoints | Status |
 |---|---|---|---|---|---|---|
-| `mitigation.recorded-runs` | The page states the date, kernel, CPU, command and method; the same sender and traffic for every receiver; loss reported | detective | `threat.misleading-numbers` | SR-001 | `bench/src/main.rs`, `site/content/docs/performance.md` | required |
+| `mitigation.recorded-runs` | The page states the date, kernel, CPU, command and method; the same sender and traffic for every receiver; loss reported | detective | `threat.misleading-numbers` | SR-001 | `bench/src/main.rs`, `site/content/docs/performance.md` | verified |
 
 ## Security Requirements
 
-### SR-001 (P2) — unverified
+### SR-001 (P2) — verified
 
 Every published number MUST come from a recorded harness run whose date, environment, command and method are on the page, with the same sender and traffic for every receiver.
 
 - **Given** the performance page, **when** it is reviewed against the harness output, **then** every number matches the recorded run, and the method lists sender, traffic and filters per receiver
 - Mitigations: `mitigation.recorded-runs`
-- Tasks: — none —
+- Tasks: T003 ✓
+- Verification `verification.sr-001.2026-11-09`: review → pass (verified) — `site/content/docs/performance.md against scripts/bench.sh --docker output of 2026-11-09`

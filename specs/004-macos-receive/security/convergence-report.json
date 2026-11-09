@@ -1,0 +1,32 @@
+{
+  "feature": "004-macos-receive",
+  "commit": "4142732",
+  "timestamp": "2026-11-09T15:30:05Z",
+  "status": "CONVERGED",
+  "threats": {
+    "total": 1,
+    "open_blocking": []
+  },
+  "requirements": {
+    "total": 1,
+    "verified": [
+      "SR-001"
+    ],
+    "implemented_unverified": [],
+    "partial": [],
+    "missing": [],
+    "risk_accepted": []
+  },
+  "expired_decisions": [],
+  "drift": [],
+  "appended_tasks": [],
+  "already_open_tasks_for": [],
+  "verdicts": {
+    "SR-001": {
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/bpf.rs::pair; CI macos-15, macos-26, FreeBSD 14 with RAWETHER_REQUIRE_PAIR=1",
+      "justification": "pair() asserts when RAWETHER_REQUIRE_PAIR is set and no pair is named; CI sets it on all three BSD lanes, and the suite ran (6 tests) on each in PR #2."
+    }
+  }
+}

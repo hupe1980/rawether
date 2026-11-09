@@ -61,7 +61,8 @@ if let Some(f) = p.frame() {
 
 | `RxPath` | Platform | How |
 |---|---|---|
-| `Ring` | Linux | A TPACKET_V3 ring shared with the kernel. Frames are read in place, many per wake-up. The default |
+| `Ring` | Linux | A TPACKET_V3 block ring shared with the kernel. Frames are read in place, many per wake-up, but a lone frame waits for its block (up to 1 ms). The default |
+| `FrameRing` | Linux | A TPACKET_V2 per-frame ring: read in place like the block ring, but each frame is handed over as it arrives. The lowest latency without losing throughput |
 | `Plain` | Linux | One `recvmsg` per frame. Used when you ask for it, or when `Auto` finds the kernel refusing the ring |
 | `Bpf` | macOS, FreeBSD | A BPF device's read buffer. Each `read` returns every frame waiting |
 
@@ -70,17 +71,19 @@ Choose with `Config::rx_mode`:
 ```rust
 use rawether::{Config, RingConfig, RxMode};
 
-// The default: the ring where possible.
+// The default: the block ring where possible. The most frames per second.
 let a = Config::new("eth0").rx_mode(RxMode::Auto);
-// One system call per frame: the lowest latency for a lone frame, the most system calls.
-let b = Config::new("eth0").rx_mode(RxMode::Plain);
-// A bigger ring for bursts: 256 blocks of 64 KiB (16 MiB).
+// Time-critical (GOOSE, PTP): each frame handed over as it arrives, without losing throughput.
+let b = Config::new("eth0").rx_mode(RxMode::low_latency());
+// A bigger block ring for bursts: 256 blocks of 64 KiB (16 MiB).
 let c = Config::new("eth0").rx_mode(RxMode::Ring(RingConfig { block_count: 256, ..RingConfig::default() }));
+// One system call per frame.
+let d = Config::new("eth0").rx_mode(RxMode::Plain);
 ```
 
-With `Auto`, a ring the kernel refuses (for example under a memory limit) becomes the plain path; check `rx_path()` if it matters to you. An explicit `RxMode::Ring` the kernel refuses fails `open` with the reason instead. A geometry that cannot work, or whose size overflows, is refused before any system call.
+With `Auto`, a ring the kernel refuses (for example under a memory limit) becomes the plain path; check `rx_path()` if it matters to you. An explicit `RxMode::Ring` or `RxMode::FrameRing` the kernel refuses fails `open` with the reason instead. A geometry that cannot work, or whose size overflows, is refused before any system call.
 
-At low frame rates the ring adds up to `retire_ms` (1 ms by default, also the minimum) before a lone frame is handed over. If your budget is tighter than that, use `RxMode::Plain`: about 15 µs instead of about 550 µs at the median ([Performance](@/docs/performance.md)).
+At low frame rates the block ring adds up to `retire_ms` (1 ms by default, also the minimum) before a lone frame is handed over. If your budget is tighter than that, use `RxMode::low_latency()`: a per-frame ring of 4 096 slots of 2 048 octets (`FrameRingConfig` sets both; larger slots for jumbo frames). See [Performance](@/docs/performance.md) for the numbers.
 
 ## Sizing the ring
 

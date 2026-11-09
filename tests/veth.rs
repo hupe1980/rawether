@@ -2,8 +2,8 @@
 //!
 //! Skips unless `RAWETHER_TEST_IFACE` and `RAWETHER_TEST_PEER` name the two ends of a veth pair
 //! and the process has `CAP_NET_RAW` (and `CAP_NET_ADMIN` for the launch-time test).
-//! `scripts/veth-test.sh` sets that up, natively with sudo or in Docker. `RAWETHER_RX=plain`
-//! runs the whole suite on the plain receive path instead of the ring.
+//! `scripts/veth-test.sh` sets that up, natively with sudo or in Docker. `RAWETHER_RX=plain` or `frame`
+//! runs the whole suite on the plain path or the per-frame ring instead of the block ring.
 
 #![cfg(target_os = "linux")]
 #![allow(clippy::unwrap_used, clippy::panic)]
@@ -47,12 +47,17 @@ fn pair() -> Option<(String, String)> {
 fn rx_mode() -> RxMode {
     match std::env::var("RAWETHER_RX").as_deref() {
         Ok("plain") => RxMode::Plain,
+        Ok("frame") => RxMode::low_latency(),
         _ => RxMode::Auto,
     }
 }
 
 fn expected_path() -> RxPath {
-    if rx_mode() == RxMode::Plain { RxPath::Plain } else { RxPath::Ring }
+    match rx_mode() {
+        RxMode::Plain => RxPath::Plain,
+        RxMode::FrameRing(_) => RxPath::FrameRing,
+        _ => RxPath::Ring,
+    }
 }
 
 fn frame(dst: MacAddr, src: MacAddr, ethertype: EtherType, vlan: Option<u16>, seq: u32) -> Vec<u8> {

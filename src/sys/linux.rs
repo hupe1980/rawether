@@ -1,4 +1,4 @@
-//! Linux: AF_PACKET with a TPACKET_V3 receive ring.
+//! Linux: AF_PACKET with a TPACKET_V3 block ring or a TPACKET_V2 frame ring.
 //!
 //! Every `unsafe` block below wraps one system call or one access to the memory the kernel
 //! shares through the ring, and says why it is sound.
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use super::deadline;
 use super::unix::{Ready, ifr_name, interface_index, last_error, set_nonblocking, socket_error, wait};
 use crate::bpf::Program;
-use crate::config::{Clock, Config, RingConfig, RxMode, Timestamping, TxTime};
+use crate::config::{Clock, Config, FrameRingConfig, RingConfig, RxMode, Timestamping, TxTime};
 use crate::hwtstamp::{self, Plan};
 use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
 use crate::packet::{TimestampInfo, TxTimestamp};
@@ -23,6 +23,7 @@ use crate::ring::{self, Cursor};
 use crate::vlan;
 
 /// `enum tpacket_versions` — not exported by `libc`.
+const TPACKET_V2: libc::c_int = 1;
 const TPACKET_V3: libc::c_int = 2;
 /// Head-room the kernel leaves in front of every ring frame, for VLAN re-insertion.
 const RESERVE: libc::c_uint = 4;
@@ -97,6 +98,85 @@ impl std::fmt::Debug for Ring {
     }
 }
 
+/// The per-frame receive ring: `frames` slots of `frame_size` octets, `per_block` to a block of
+/// `block_size`, in a mapping shared with the kernel.
+struct FrameRing {
+    base: NonNull<u8>,
+    len: usize,
+    block_size: usize,
+    frame_size: usize,
+    per_block: usize,
+    frames: usize,
+    /// The next slot to read.
+    current: usize,
+    /// The slot handed out by the last receive, returned to the kernel by the next one.
+    held: Option<usize>,
+}
+
+// SAFETY: as for `Ring`: the mapping belongs to this value alone.
+unsafe impl Send for FrameRing {}
+
+impl std::fmt::Debug for FrameRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameRing")
+            .field("frame_size", &self.frame_size)
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FrameRing {
+    /// Where slot `i` starts in the mapping.
+    fn offset(&self, i: usize) -> usize {
+        (i / self.per_block) * self.block_size + (i % self.per_block) * self.frame_size
+    }
+
+    #[allow(clippy::cast_ptr_alignment)] // the offset is 16-aligned; see the SAFETY comment
+    fn status(&self, i: usize) -> &AtomicU32 {
+        let offset = self.offset(i) + ring::frame2::STATUS;
+        debug_assert!(offset + 4 <= self.len);
+        // SAFETY: slot `i < frames` lies inside the mapping; its status word is its first four
+        // octets, 16-aligned (blocks are page-aligned, slots multiples of 16), and the kernel
+        // accesses it atomically too.
+        unsafe { &*self.base.as_ptr().add(offset).cast::<AtomicU32>() }
+    }
+
+    /// Slot `i` as a shared slice. Only called for a slot whose `TP_STATUS_USER` bit was observed
+    /// with acquire ordering and that has not been released since: the kernel does not write it.
+    fn slot(&self, i: usize) -> &[u8] {
+        // SAFETY: `[offset, offset + frame_size)` lies inside the mapping, and the slot is in
+        // user ownership (see above), so nothing writes it while the shared slice lives.
+        unsafe { std::slice::from_raw_parts(self.base.as_ptr().add(self.offset(i)), self.frame_size) }
+    }
+
+    /// `range` of user-owned slot `i`, mutably: one frame and its head-room, which only VLAN
+    /// re-insertion writes. `None` unless `range` lies inside the slot.
+    fn slot_mut(&mut self, i: usize, range: std::ops::Range<usize>) -> Option<&mut [u8]> {
+        if range.start > range.end || range.end > self.frame_size {
+            return None;
+        }
+        let offset = self.offset(i) + range.start;
+        // SAFETY: the range lies inside the slot (checked) and so inside the mapping; the slot is
+        // user-owned and `&mut self` keeps the slice unique on our side.
+        Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().add(offset), range.len()) })
+    }
+
+    fn release(&self, i: usize) {
+        fence(Ordering::Release);
+        self.status(i).store(libc::TP_STATUS_KERNEL, Ordering::Release);
+    }
+}
+
+impl Drop for FrameRing {
+    fn drop(&mut self) {
+        // SAFETY: `base`/`len` are exactly what `mmap` returned, and nothing borrows the mapping
+        // any more (packets borrow the socket, which is being dropped).
+        unsafe {
+            libc::munmap(self.base.as_ptr().cast(), self.len);
+        }
+    }
+}
+
 impl Ring {
     #[allow(clippy::cast_ptr_alignment)] // the offset is 4-aligned; see the SAFETY comment
     fn status(&self, block: usize) -> &AtomicU32 {
@@ -160,8 +240,9 @@ struct Found {
 /// An open AF_PACKET socket.
 #[derive(Debug)]
 pub(crate) struct Inner {
-    // Drop order: the ring is unmapped before the socket closes.
+    // Drop order: the rings are unmapped before the socket closes.
     ring: Option<Ring>,
+    frame_ring: Option<FrameRing>,
     fd: OwnedFd,
     name: String,
     index: u32,
@@ -237,10 +318,11 @@ impl Inner {
 
         // `Auto` falls back to the plain path (and `rx_path` says so); an explicit ring that the
         // kernel refuses is an error, not a quiet downgrade.
-        let ring = match cfg.rx {
-            RxMode::Plain => None,
-            RxMode::Auto => setup_ring(&fd, RingConfig::default(), hardware).ok(),
-            RxMode::Ring(r) => Some(setup_ring(&fd, r, hardware)?),
+        let (ring, frame_ring) = match cfg.rx {
+            RxMode::Plain => (None, None),
+            RxMode::Auto => (setup_ring(&fd, RingConfig::default(), hardware).ok(), None),
+            RxMode::Ring(r) => (Some(setup_ring(&fd, r, hardware)?), None),
+            RxMode::FrameRing(f) => (None, Some(setup_frame_ring(&fd, f, hardware)?)),
         };
 
         // SAFETY: an all-zero `sockaddr_ll` is a valid value of a C struct of integers.
@@ -318,7 +400,7 @@ impl Inner {
         if cfg.nonblocking {
             set_nonblocking(fd.as_fd(), true)?;
         }
-        let buf = if ring.is_some() {
+        let buf = if ring.is_some() || frame_ring.is_some() {
             Vec::new()
         } else {
             vec![0u8; RESERVE as usize + cfg.buffer_size.min(PLAIN_MAX)]
@@ -326,6 +408,7 @@ impl Inner {
 
         Ok(Inner {
             ring,
+            frame_ring,
             fd,
             name: cfg.interface.clone(),
             index,
@@ -363,7 +446,13 @@ impl Inner {
     }
 
     pub(crate) fn rx_path(&self) -> RxPath {
-        if self.ring.is_some() { RxPath::Ring } else { RxPath::Plain }
+        if self.ring.is_some() {
+            RxPath::Ring
+        } else if self.frame_ring.is_some() {
+            RxPath::FrameRing
+        } else {
+            RxPath::Plain
+        }
     }
 
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
@@ -413,6 +502,20 @@ impl Inner {
     pub(crate) fn recv(&mut self, timeout: Option<Duration>) -> io::Result<Option<Packet<'_>>> {
         let timeout = if self.nonblocking { Some(Duration::ZERO) } else { timeout };
         let deadline = deadline(timeout);
+        if self.frame_ring.is_some() {
+            let Some(found) = self.frame_ring_next(deadline)? else { return Ok(None) };
+            let ring = self.frame_ring.as_ref().ok_or_else(|| io::Error::other("frame ring vanished"))?;
+            let data = ring
+                .slot(found.block)
+                .get(found.start..found.start + found.len)
+                .ok_or_else(|| io::Error::other("ring frame out of range"))?;
+            return Ok(Some(Packet {
+                data,
+                original_len: found.original_len,
+                timestamp: found.timestamp,
+                vlan_restored: found.vlan_restored,
+            }));
+        }
         if self.ring.is_some() {
             let Some(found) = self.ring_next(deadline)? else { return Ok(None) };
             let ring = self.ring.as_ref().ok_or_else(|| io::Error::other("ring vanished"))?;
@@ -431,6 +534,70 @@ impl Inner {
             return Ok(None);
         };
         Ok(Some(Packet { data: &self.buf[start..start + len], original_len, timestamp, vlan_restored }))
+    }
+
+    /// The next frame on the per-frame ring. The slot handed out last is returned first; a slot
+    /// whose header does not hold together, or that holds this host's own frame, is returned
+    /// unread.
+    fn frame_ring_next(&mut self, deadline: Option<Instant>) -> io::Result<Option<Found>> {
+        let (restore, see_outgoing, timestamping) = (self.restore_vlan, self.see_outgoing, self.timestamping);
+        loop {
+            let ring = self.frame_ring.as_mut().ok_or_else(|| io::Error::other("no frame ring"))?;
+            if let Some(h) = ring.held.take() {
+                ring.release(h);
+                ring.current = (h + 1) % ring.frames;
+            }
+            let i = ring.current;
+            if ring.status(i).load(Ordering::Acquire) & ring::status::USER != 0 {
+                fence(Ordering::Acquire);
+                ring.held = Some(i);
+                let slot = ring.slot(i);
+                let Some(meta) = ring::FrameMeta::read_v2(slot) else { continue };
+                if !see_outgoing && slot.get(ring::frame2::SLL_PKTTYPE) == Some(&libc::PACKET_OUTGOING) {
+                    continue;
+                }
+                let (mut start, mut len) = (meta.mac, meta.snaplen);
+                let mut original_len = meta.len;
+                let mut restored = false;
+                // The re-inserted tag needs the reserved octets in front of the frame, which lie
+                // after the header and its `sockaddr_ll` (32 + 20).
+                if restore
+                    && meta.mac >= ring::frame2::HDR + 20 + RESERVE as usize
+                    && let Some((tpid, tci)) = meta.stripped_vlan()
+                    && let Some(region) = ring.slot_mut(i, start - 4..start + len)
+                    && vlan::reinsert(region, 4, len, tpid, tci).is_some()
+                {
+                    (start, len, restored) = (start - 4, len + 4, true);
+                    original_len += 4;
+                }
+                let timestamp = (timestamping != Timestamping::Off).then(|| Timestamp {
+                    secs: i64::from(meta.sec),
+                    nanos: meta.nsec,
+                    source: if meta.status & ring::status::TS_RAW_HARDWARE != 0 {
+                        TimestampSource::Hardware
+                    } else {
+                        TimestampSource::Software
+                    },
+                });
+                return Ok(Some(Found {
+                    block: i,
+                    start,
+                    len,
+                    original_len,
+                    timestamp,
+                    vlan_restored: restored,
+                }));
+            }
+            let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if remaining == Some(Duration::ZERO) {
+                return Ok(None);
+            }
+            match wait(self.fd.as_fd(), remaining, libc::POLLIN)? {
+                Ready::Readable => {}
+                Ready::Timeout => return Ok(None),
+                Ready::Error => self.on_socket_error()?,
+            }
+        }
     }
 
     fn ring_next(&mut self, deadline: Option<Instant>) -> io::Result<Option<Found>> {
@@ -1098,6 +1265,72 @@ unsafe fn cmsg_payload<T>(msg: &libc::msghdr, c: *const libc::cmsghdr) -> Option
     Some(unsafe { data.cast::<T>().read_unaligned() })
 }
 
+/// A per-frame (TPACKET_V2) ring: 64 KiB blocks (at least a page), as many slots per block as
+/// fit, and enough blocks for `f.frame_count` slots.
+fn setup_frame_ring(fd: &OwnedFd, f: FrameRingConfig, hardware: bool) -> io::Result<FrameRing> {
+    // SAFETY: sysconf is a plain query.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    let frame_size = f.frame_size as usize;
+    let block_size = frame_size.max(1 << 16).next_multiple_of(page);
+    let per_block = block_size / frame_size;
+    let blocks = (f.frame_count as usize).div_ceil(per_block);
+    let frames = per_block * blocks;
+    let geometry =
+        || io::Error::new(io::ErrorKind::InvalidInput, format!("frame ring geometry {f:?} is too large"));
+    let len = block_size.checked_mul(blocks).ok_or_else(geometry)?;
+    let req = libc::tpacket_req {
+        tp_block_size: u32::try_from(block_size).map_err(|_| geometry())?,
+        tp_block_nr: u32::try_from(blocks).map_err(|_| geometry())?,
+        tp_frame_size: f.frame_size,
+        tp_frame_nr: u32::try_from(frames).map_err(|_| geometry())?,
+    };
+    setopt(fd, libc::SOL_PACKET, libc::PACKET_VERSION, &TPACKET_V2, "PACKET_VERSION")?;
+    setopt(fd, libc::SOL_PACKET, libc::PACKET_RESERVE, &RESERVE, "PACKET_RESERVE")?;
+    if hardware {
+        let _ = setopt(
+            fd,
+            libc::SOL_PACKET,
+            libc::PACKET_TIMESTAMP,
+            &(libc::SOF_TIMESTAMPING_RAW_HARDWARE as libc::c_int),
+            "PACKET_TIMESTAMP",
+        );
+    }
+    setopt(fd, libc::SOL_PACKET, libc::PACKET_RX_RING, &req, "PACKET_RX_RING")?;
+    let Some(base) = map_ring(fd, len) else {
+        let e = last_error("mmap of the frame ring");
+        // Without the mapping the ring must go, or frames would vanish into it.
+        // SAFETY: all-zero is a valid `tpacket_req`; a zero block count frees the ring.
+        let off: libc::tpacket_req = unsafe { zeroed() };
+        let _ = setopt(fd, libc::SOL_PACKET, libc::PACKET_RX_RING, &off, "PACKET_RX_RING off");
+        return Err(e);
+    };
+    Ok(FrameRing { base, len, block_size, frame_size, per_block, frames, current: 0, held: None })
+}
+
+/// Map a ring of `len` octets the kernel just allocated for `fd`: locked where the limit
+/// allows, unlocked otherwise. `None` (errno set) if the mapping fails.
+fn map_ring(fd: &OwnedFd, len: usize) -> Option<NonNull<u8>> {
+    let map = |flags| {
+        // SAFETY: mapping the ring the kernel just allocated for this socket; the result is
+        // checked against MAP_FAILED below.
+        unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                flags,
+                fd.as_raw_fd(),
+                0,
+            )
+        }
+    };
+    let mut p = map(libc::MAP_SHARED | libc::MAP_LOCKED);
+    if p == libc::MAP_FAILED {
+        p = map(libc::MAP_SHARED);
+    }
+    NonNull::new(p.cast::<u8>()).filter(|_| p != libc::MAP_FAILED)
+}
+
 fn setup_ring(fd: &OwnedFd, r: RingConfig, hardware: bool) -> io::Result<Ring> {
     // SAFETY: sysconf is a plain query.
     let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
@@ -1134,25 +1367,7 @@ fn setup_ring(fd: &OwnedFd, r: RingConfig, hardware: bool) -> io::Result<Ring> {
         tp_feature_req_word: 0,
     };
     setopt(fd, libc::SOL_PACKET, libc::PACKET_RX_RING, &req, "PACKET_RX_RING")?;
-    let map = |flags| {
-        // SAFETY: mapping the ring the kernel just allocated for this socket; the result is
-        // checked against MAP_FAILED below.
-        unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                flags,
-                fd.as_raw_fd(),
-                0,
-            )
-        }
-    };
-    let mut p = map(libc::MAP_SHARED | libc::MAP_LOCKED);
-    if p == libc::MAP_FAILED {
-        p = map(libc::MAP_SHARED);
-    }
-    let Some(base) = NonNull::new(p.cast::<u8>()).filter(|_| p != libc::MAP_FAILED) else {
+    let Some(base) = map_ring(fd, len) else {
         let e = last_error("mmap of the receive ring");
         // Without the mapping the ring must go, or frames would vanish into it.
         // SAFETY: all-zero is a valid `tpacket_req3`; a zero block count frees the ring.

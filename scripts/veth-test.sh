@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run the kernel-behaviour suite (tests/veth.rs) on a veth pair, on the ring and on the plain
-# receive path.
+# Run the kernel-behaviour suite (tests/veth.rs) on a veth pair, on each receive path: the block
+# ring, the plain path and the per-frame ring.
 #
 #   scripts/veth-test.sh           # Linux: builds as you, runs the test binary with sudo
 #   scripts/veth-test.sh --docker  # anywhere with Docker: the same inside a Linux container
@@ -30,7 +30,7 @@ caps=$(built drop_capabilities)
 [[ -n "$bin" && -n "$caps" ]] || { echo "could not build the kernel tests" >&2; exit 1; }
 
 export RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1
-for rx in ring plain; do
+for rx in ring plain frame; do
     echo "==> veth suite, receive path: $rx"
     run "$mode" env RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1 RAWETHER_RX="$rx" "$bin" --test-threads=1
     run "$mode" env RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1 RAWETHER_RX="$rx" RAWETHER_ALLOC_ALONE=1 \

@@ -381,16 +381,30 @@ fn join_groups(name: &str, groups: &[MacAddr]) -> io::Result<OwnedFd> {
         // SAFETY: all-zero is a valid `ifreq`.
         let mut ifr: libc::ifreq = unsafe { zeroed() };
         ifr.ifr_name = ifr_name(name)?;
+        // The group as a link-layer `sockaddr_dl` in `ifr_addr`, as FreeBSD's mtest(8) builds
+        // it: FreeBSD accepts only AF_LINK here, macOS AF_LINK or AF_UNSPEC. After `sdl_len`
+        // and `sdl_family`, `sa_data` holds `sdl_index` (2), `sdl_type`, `sdl_nlen`, `sdl_alen`,
+        // `sdl_slen`, then the address (nlen = 0).
         // SAFETY: writing the `ifru_addr` member of the union, a plain `sockaddr`.
         let sa = unsafe { &mut ifr.ifr_ifru.ifru_addr };
-        sa.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
-        sa.sa_len = size_of::<libc::sockaddr>() as u8;
-        for (o, b) in sa.sa_data.iter_mut().zip(g.0) {
+        sa.sa_len = size_of::<libc::sockaddr_dl>() as u8;
+        sa.sa_family = libc::AF_LINK as libc::sa_family_t;
+        sa.sa_data[4] = 6; // sdl_alen
+        for (o, b) in sa.sa_data[6..12].iter_mut().zip(g.0) {
             *o = b as libc::c_char;
         }
         // SAFETY: SIOCADDMULTI reads `ifr`, which is live.
         if unsafe { libc::ioctl(fd.as_raw_fd(), SIOCADDMULTI as _, &raw mut ifr) } < 0 {
-            return Err(last_error(&format!("SIOCADDMULTI {g} on {name}")));
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "SIOCADDMULTI {g} on {name}: joining a multicast group needs root (access to /dev/bpf* is not enough); run as root, or receive the group with promiscuous(true) and an EtherType filter"
+                    ),
+                ));
+            }
+            return Err(io::Error::new(e.kind(), format!("SIOCADDMULTI {g} on {name}: {e}")));
         }
     }
     Ok(fd)

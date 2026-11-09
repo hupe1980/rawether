@@ -226,8 +226,10 @@ impl TimestampInfo {
 /// How frames reach user space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RxPath {
-    /// A TPACKET_V3 ring shared with the kernel (Linux).
+    /// A TPACKET_V3 block ring shared with the kernel (Linux).
     Ring,
+    /// A TPACKET_V2 per-frame ring shared with the kernel (Linux).
+    FrameRing,
     /// One `recvmsg` per frame (Linux).
     Plain,
     /// A BPF device read buffer (macOS and the BSDs).

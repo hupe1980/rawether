@@ -1,0 +1,102 @@
+{
+  "feature": "004-macos-receive",
+  "commit": "4142732",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "In CI the BSD suite MUST fail, not skip, when its interface pair is missing.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "RAWETHER_REQUIRE_PAIR set and no pair",
+          "then": "it fails naming the missing pair",
+          "when": "the suite starts"
+        }
+      ],
+      "mitigations": [
+        "mitigation.require-pair"
+      ],
+      "tasks": [
+        {
+          "id": "T001",
+          "done": true,
+          "text": "[SR-001] tests/bpf.rs: env pair (`RAWETHER_TEST_IFACE`/`PEER`), `RAWETHER_REQUIRE_PAIR` fails on a missing pair; tests: EtherType filter tagged/untagged with software timestamps; own frames hidden; 1 000 frames received + dropped = sent; 20-octet snap length \u2192 truncated with wire length; timeout; multicast join outcome without root (Q-15) printed and checked for a clear error"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/bpf.rs",
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": ".github/workflows/ci.yml",
+            "exists": true
+          },
+          {
+            "path": "tests/bpf.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.silent-skip"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 1,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 1
+    },
+    "threats_by_severity": {
+      "medium": 1
+    },
+    "mitigations": 1,
+    "requirements": 1,
+    "requirements_with_tasks": 1,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "medium": 1
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

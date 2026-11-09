@@ -17,6 +17,7 @@ const PACE: Duration = Duration::from_micros(200);
 #[derive(Clone, Copy, Debug)]
 enum Receiver {
     RawetherRing,
+    RawetherFrameRing,
     RawetherPlain,
     Pcap,
     Pnet,
@@ -25,7 +26,8 @@ enum Receiver {
 impl Receiver {
     fn name(self) -> &'static str {
         match self {
-            Receiver::RawetherRing => "rawether, ring (default)",
+            Receiver::RawetherRing => "rawether, block ring (default)",
+            Receiver::RawetherFrameRing => "rawether, frame ring (`RxMode::low_latency()`)",
             Receiver::RawetherPlain => "rawether, plain (`recvmsg`)",
             Receiver::Pcap => "pcap 2 (libpcap, immediate mode)",
             Receiver::Pnet => "pnet_datalink 0.35",
@@ -69,8 +71,12 @@ fn receive(kind: Receiver, iface: &str, ready: &Barrier, stop: &AtomicBool, mut 
     };
     let done = |last: Instant, ended: bool| ended || (stop.load(Ordering::Acquire) && last.elapsed() > idle);
     match kind {
-        Receiver::RawetherRing | Receiver::RawetherPlain => {
-            let mode = if matches!(kind, Receiver::RawetherRing) { RxMode::Auto } else { RxMode::Plain };
+        Receiver::RawetherRing | Receiver::RawetherFrameRing | Receiver::RawetherPlain => {
+            let mode = match kind {
+                Receiver::RawetherRing => RxMode::Auto,
+                Receiver::RawetherFrameRing => RxMode::low_latency(),
+                _ => RxMode::Plain,
+            };
             let mut s = Config::new(iface).ethertypes([TYPE]).rx_mode(mode).open().expect("rawether");
             ready.wait();
             loop {
@@ -214,7 +220,8 @@ fn main() {
         eprintln!("usage: rawether-bench <sender-iface> <receiver-iface>");
         std::process::exit(2);
     };
-    let kinds = [Receiver::RawetherRing, Receiver::RawetherPlain, Receiver::Pcap, Receiver::Pnet];
+    let kinds =
+        [Receiver::RawetherRing, Receiver::RawetherFrameRing, Receiver::RawetherPlain, Receiver::Pcap, Receiver::Pnet];
     println!("| Receiver | Frames/s received | Received of {FLOOD} | Latency p50 | p99 | max |");
     println!("|---|---|---|---|---|---|");
     let mut failed = false;

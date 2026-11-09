@@ -26,6 +26,7 @@ On Linux, a rawether socket is an `AF_PACKET`, `SOCK_RAW` socket bound to one in
 |---|---|
 | `Config::ethertypes`, `Filter::Bpf` | `SO_ATTACH_FILTER` (classic BPF), attached before `bind` |
 | `RxMode::Ring` | `PACKET_VERSION` = `TPACKET_V3`, `PACKET_RESERVE`, `PACKET_RX_RING`, `mmap` (`MAP_LOCKED` where allowed) |
+| `RxMode::FrameRing`, `RxMode::low_latency()` | `PACKET_VERSION` = `TPACKET_V2` (one slot per frame), otherwise as above |
 | `RxMode::Plain` | `recvmsg` with `PACKET_AUXDATA` and `SCM_TIMESTAMPING` control messages |
 | `join`, `all_multicast`, `promiscuous` | `PACKET_ADD_MEMBERSHIP` with `PACKET_MR_MULTICAST`, `_ALLMULTI`, `_PROMISC` |
 | `Timestamping` | `SO_TIMESTAMPING`; `SIOCGHWTSTAMP` first, `SIOCSHWTSTAMP` only to widen a NIC that stamps nothing |
