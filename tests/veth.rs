@@ -207,6 +207,14 @@ fn sparse_frames_wait_in_the_ring_while_the_reader_is_busy() {
     assert_eq!(got, 50, "dropped {}", r.stats().unwrap().dropped);
 }
 
+/// An `etf` qdisc on an interface, removed on drop.
+struct Etf<'a>(&'a str);
+impl Drop for Etf<'_> {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tc").args(["qdisc", "del", "dev", self.0, "root"]).status();
+    }
+}
+
 /// Threat model T-09 (SR-009): launch time is opt-in and its drops are reported.
 #[test]
 fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
@@ -229,6 +237,9 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
         eprintln!("skipping the launch-time half: no etf qdisc");
         return;
     }
+    // Remove the qdisc even if an assertion fails: etf refuses untimed frames, which would break
+    // every later test on this interface.
+    let _etf = Etf(&iface);
     let mut r = rx(&peer, &[TYPE_A]);
     let mut timed = Config::new(&iface)
         .ethertypes(&[0xffff])
@@ -247,13 +258,14 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
         start.elapsed()
     );
 
-    // A launch time in the past is dropped by etf and reported on the error queue.
-    timed.send_at(&f, now.checked_sub(Duration::from_secs(1)).unwrap().as_nanos() as u64).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    // Spec 003 SR-011: counted as a missed deadline, nothing else.
+    // Spec 003 SR-011: a launch time already past is refused at once. etf drops it at enqueue,
+    // so send_at fails, and the error queue reports invalid parameters (not a missed slot).
+    let past = now.checked_sub(Duration::from_secs(1)).unwrap().as_nanos() as u64;
+    let e = timed.send_at(&f, past).expect_err("etf refuses a launch time in the past");
+    assert!(e.to_string().contains("launch time"), "{e}");
     let errors = timed.tx_errors().unwrap();
-    assert!(errors.missed >= 1, "{errors:?}");
-    let _ = std::process::Command::new("tc").args(["qdisc", "del", "dev", &iface, "root"]).status();
+    assert_eq!((errors.invalid, errors.missed), (1, 0), "{errors:?}");
+    assert_eq!(timed.tx_errors().unwrap().total(), 0, "drained");
 }
 
 /// Threat model T-06 (SR-006).

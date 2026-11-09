@@ -323,7 +323,7 @@ link checker; the gates pass.
 - **SR-011** (P2): tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters separately.
   - Mitigates: `threat.tx-errors-miscounted` via `mitigation.parsed-error-queue`
   - Given sock_extended_err records of origin TXTIME code MISSED, code INVALID_PARAM, and origin LOCAL, when they are classified, then one missed, one invalid, the LOCAL one ignored
-  - Given a frame with a past launch time through etf on veth, when tx_errors is read, then missed >= 1
+  - Given a frame with a past launch time through etf on veth, when send_at runs and tx_errors is read, then send_at fails naming the launch time, and tx_errors reports invalid = 1, missed = 0 (etf refuses a past time at enqueue as INVALID_PARAM; MISSED is for frames late at dequeue)
 - **SR-012** (P3): stats().received MUST count only frames that passed the filter, on every backend.
   - Mitigates: `threat.stats-misreport` via `mitigation.counted-deliveries`
   - Given a BSD socket with a filter, when frames are read and stats() is read, then received equals the frames delivered (review of the counter; macOS loopback test where privileged)

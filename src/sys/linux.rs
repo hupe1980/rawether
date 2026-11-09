@@ -579,7 +579,16 @@ impl Inner {
         // SAFETY: `msg` describes live buffers as above.
         let n = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &raw const msg, 0) };
         if n < 0 {
-            return Err(last_error("sendmsg with SCM_TXTIME"));
+            let e = io::Error::last_os_error();
+            // The qdisc dropped the frame at enqueue: etf refuses a launch time already past or
+            // on another clock, and reports why to `tx_errors`.
+            if e.raw_os_error() == Some(libc::ENOBUFS) {
+                return Err(io::Error::new(
+                    e.kind(),
+                    "the qdisc refused the launch time (already past, or on another clock); see tx_errors",
+                ));
+            }
+            return Err(io::Error::new(e.kind(), format!("sendmsg with SCM_TXTIME: {e}")));
         }
         Ok(())
     }

@@ -51,7 +51,7 @@ threatspec:
   - entity: Launch-time error counts
     reason: an output of component.linux-backend, modelled through threat.tx-errors-miscounted
   extends: .specify/memory/threat-model.yaml
-  generated: '2026-11-09T11:48:24Z'
+  generated: '2026-11-09T12:26:35Z'
   profiles:
   - stride
   sources:
@@ -540,7 +540,7 @@ mitigations:
   attributes:
     threats:
     - threat.numeric-limits-panic
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-008
@@ -554,7 +554,7 @@ mitigations:
   attributes:
     threats:
     - threat.control-message-overread
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-005
@@ -566,7 +566,7 @@ mitigations:
   attributes:
     threats:
     - threat.stats-misreport
-    status: verified
+    status: required
     kind: detective
     requirements:
     - SR-012
@@ -578,7 +578,7 @@ mitigations:
   attributes:
     threats:
     - threat.silent-downgrade
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-009
@@ -590,7 +590,7 @@ mitigations:
   attributes:
     threats:
     - threat.own-frames-on-freebsd
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-010
@@ -603,7 +603,7 @@ mitigations:
   attributes:
     threats:
     - threat.bpf-record-misparse
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-001
@@ -617,7 +617,7 @@ mitigations:
   attributes:
     threats:
     - threat.ring-mutable-alias
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-006
@@ -645,7 +645,7 @@ mitigations:
   attributes:
     threats:
     - threat.capability-kept-by-other-threads
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-002
@@ -658,7 +658,7 @@ mitigations:
   attributes:
     threats:
     - threat.sockaddr-provenance
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-007
@@ -671,7 +671,7 @@ mitigations:
   attributes:
     threats:
     - threat.nic-timestamp-config-clobbered
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-003
@@ -684,7 +684,7 @@ mitigations:
   attributes:
     threats:
     - threat.recv-spins-on-socket-error
-    status: verified
+    status: required
     kind: preventive
     requirements:
     - SR-004
@@ -837,8 +837,9 @@ requirements:
     then: one missed, one invalid, the LOCAL one ignored
     when: they are classified
   - given: a frame with a past launch time through etf on veth
-    then: missed >= 1
-    when: tx_errors is read
+    then: send_at fails naming the launch time, and tx_errors reports invalid = 1, missed = 0 (etf refuses a past
+      time at enqueue as INVALID_PARAM; MISSED is for frames late at dequeue)
+    when: send_at runs and tx_errors is read
   tasks: []
 - id: SR-012
   statement: stats().received MUST count only frames that passed the filter, on every backend.

@@ -64,7 +64,7 @@ sock.send_at(&frame, launch.as_nanos() as u64)?;
 
 ## 4. Count what missed its slot
 
-`etf` drops a frame whose launch time is already past, or that arrives too late to make it. With `report_errors`, the kernel queues a notice for each, and `tx_errors()` drains them:
+`etf` refuses a frame whose launch time is already past, or on another clock, at once: `send_at` returns an error, and the notice counts as `invalid`. A frame accepted but dequeued too late to make its slot is dropped later and counts as `missed`. With `report_errors`, `tx_errors()` drains both:
 
 ```rust
 let errors = sock.tx_errors()?;
