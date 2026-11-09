@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "extensions": {
     "threatspec": {
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "local",
-      "manifest_hash": "sha256:21fe601de09217117204d4a2cd25fbfbede683b950dad9595ba05cc98eeaa4df",
+      "manifest_hash": "sha256:96ede7d3d9fce9b227e842ae185e5baa39dd45aad1cdaf8f29e72f26d81546fb",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -15,7 +15,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-11-09T09:56:03.508529+00:00"
+      "installed_at": "2026-11-09T13:39:05.379062+00:00"
     }
   }
 }
