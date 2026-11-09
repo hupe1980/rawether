@@ -1,0 +1,718 @@
+otmVersion: 0.2.0
+project:
+  id: 001-raw-l2-crate
+  name: rawether 0.1.0 — raw layer-2 Ethernet I/O
+threatspec:
+  actors:
+  - id: actor.caller
+    name: The application using rawether
+    trust: trusted
+  - id: actor.child-process
+    name: A program the caller later executes
+    trust: semi-trusted
+  - id: actor.kernel
+    name: The kernel sharing the receive ring
+    trust: privileged
+  - id: actor.segment-peer
+    name: Any device or attacker able to put frames on the link
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: 'no authentication surface: rawether handles no credentials; its only privilege is the raw-socket capability,
+      modelled under broken-access-control'
+    technique: credential-theft
+  - disposition: no-threat-detected
+    reason: 'checked the receive path: layer 2 has no sender identity and the crate claims none; source MACs are
+      delivered as received, and authenticating them is the caller''s protocol''s job'
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: 'no persistent-store surface: nothing is written to disk'
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: 'no audit-relevant surface: a socket library keeps no audit log'
+    technique: missing-audit-trail
+  - disposition: not-applicable
+    reason: 'no shared-tenant surface: one socket belongs to one process'
+    technique: cross-tenant-leak
+  - disposition: not-applicable
+    reason: 'no persistent-store surface: configuration is a value the caller builds in code'
+    technique: privilege-escalation-via-config
+  exclusions: []
+  extends: null
+  generated: '2026-11-09T10:13:03Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 8f30dc78992b0662a6bf572427c4f9e4771945162eb2d2024d6fa73f3e2d633e
+  - path: spec.md
+    sha256: 9ce6481b7019634af70de41c5efe968f51f144a3bdc09918e0524b5fd41a6173
+  surfaces:
+  - external-input
+  - network-boundary
+  - authorization
+  version: '0.1'
+trustZones:
+- id: tz.kernel
+  name: The kernel and its shared ring
+  risk:
+    trustRating: 9
+- id: tz.link
+  name: The Ethernet segment (unauthenticated)
+  risk:
+    trustRating: 1
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.link-traffic
+  name: Other hosts' traffic on the segment
+  risk:
+    availability: 20
+    confidentiality: 70
+    integrity: 20
+  attributes:
+    type: business-data
+    source: spec.md#FR-002
+    classification: confidential
+- id: asset.process-memory
+  name: Memory safety of the caller's process
+  risk:
+    availability: 80
+    confidentiality: 80
+    integrity: 95
+  attributes:
+    type: business-data
+    source: spec.md#FR-009
+    classification: internal
+- id: asset.raw-capability
+  name: The raw-socket capability (CAP_NET_RAW, or /dev/bpf access) and the open socket
+  risk:
+    availability: 30
+    confidentiality: 60
+    integrity: 85
+  attributes:
+    type: credential
+    source: spec.md#User-Story-1
+    classification: restricted
+- id: asset.received-frames
+  name: Frames delivered to the caller, with their lengths and timestamps
+  risk:
+    availability: 80
+    confidentiality: 50
+    integrity: 80
+  attributes:
+    type: business-data
+    source: spec.md#FR-004
+    classification: internal
+components:
+- id: component.bpf
+  name: Classic-BPF builder and validator
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-008
+- id: component.bsd-backend
+  name: BPF device backend (unsafe FFI)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: plan.md#Project-Structure
+- id: component.linux-backend
+  name: AF_PACKET backend (unsafe FFI, mmap)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: plan.md#Project-Structure
+- id: component.ring-walker
+  name: TPACKET_V3 ring walker and VLAN re-insertion
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: plan.md#Project-Structure
+- id: component.rx-ring
+  name: Receive ring shared with the kernel
+  type: datastore
+  parent:
+    trustZone: tz.kernel
+  attributes:
+    source: research.md#Ring-walk-TPACKET_V3
+- id: component.socket
+  name: Socket (public API)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: plan.md#Project-Structure
+dataflows:
+- id: flow.caller-to-link
+  name: Frames the caller sends
+  source: component.socket
+  destination: tz.link
+  assets:
+  - asset.link-traffic
+  attributes:
+    crosses:
+    - tz.link
+- id: flow.link-to-kernel
+  name: Frames from the segment into the kernel filter
+  source: tz.link
+  destination: component.rx-ring
+  assets:
+  - asset.received-frames
+  attributes:
+    crosses:
+    - tz.link
+- id: flow.ring-to-walker
+  name: Ring blocks read by the walker
+  source: component.rx-ring
+  destination: component.ring-walker
+  assets:
+  - asset.received-frames
+  - asset.process-memory
+  attributes:
+    crosses:
+    - tz.kernel
+- id: flow.walker-to-caller
+  name: Packets handed to the caller
+  source: component.socket
+  destination: actor.caller
+  assets:
+  - asset.received-frames
+threats:
+- id: threat.capability-retained
+  name: The caller keeps CAP_NET_RAW (or root) while parsing untrusted frames, so any parser defect runs with raw-network
+    privilege
+  categories:
+  - Elevation of Privilege
+  cwes:
+  - CWE-250
+  - CWE-272
+  risk:
+    impact: 80
+    likelihood: 40
+  attributes:
+    source: spec.md#Acceptance-Scenarios
+    assets:
+    - asset.raw-capability
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.socket
+    profile: stride
+    severity: high
+    technique: broken-access-control
+- id: threat.fd-inherited-by-child
+  name: The raw socket or BPF device descriptor is inherited by a program the caller executes, which gains raw network
+    access
+  categories:
+  - Elevation of Privilege
+  cwes:
+  - CWE-403
+  risk:
+    impact: 80
+    likelihood: 40
+  attributes:
+    source: plan.md#Constitution-Check
+    assets:
+    - asset.raw-capability
+    status: mitigated
+    actor: actor.child-process
+    disposition: threat
+    elements:
+    - component.linux-backend
+    - component.bsd-backend
+    profile: stride
+    severity: high
+    technique: broken-access-control
+- id: threat.hostile-frame-shape
+  name: A peer sends truncated, oversized or crafted VLAN frames that make the re-insertion or length reporting
+    panic or lie
+  categories:
+  - Tampering
+  cwes:
+  - CWE-20
+  - CWE-130
+  risk:
+    impact: 60
+    likelihood: 60
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.received-frames
+    - asset.process-memory
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - flow.link-to-kernel
+    - component.ring-walker
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.launch-time-abuse
+  name: Launch times far in the future, or sends without a txtime qdisc, hold or silently drop frames on the egress
+    queue
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-400
+  risk:
+    impact: 50
+    likelihood: 30
+  attributes:
+    source: research.md#Transmit
+    assets:
+    - asset.link-traffic
+    status: open
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - flow.caller-to-link
+    profile: stride
+    severity: low
+    technique: resource-exhaustion
+- id: threat.packet-outlives-block
+  name: A Packet still borrowed by the caller is handed back to the kernel and rewritten underneath it
+  categories:
+  - Tampering
+  cwes:
+  - CWE-416
+  risk:
+    impact: 90
+    likelihood: 30
+  attributes:
+    source: spec.md#Clarifications
+    assets:
+    - asset.process-memory
+    - asset.received-frames
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.socket
+    - component.rx-ring
+    profile: stride
+    severity: medium
+    technique: data-tampering-in-transit
+- id: threat.promiscuous-disclosure
+  name: Promiscuous or all-multicast mode left on by default exposes other hosts' traffic to the caller
+  categories:
+  - Information Disclosure
+  cwes:
+  - CWE-200
+  risk:
+    impact: 50
+    likelihood: 30
+  attributes:
+    source: spec.md#FR-002
+    assets:
+    - asset.link-traffic
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.socket
+    profile: stride
+    severity: low
+    technique: sensitive-data-exposure
+- id: threat.ring-exhaustion
+  name: A peer floods the segment so the ring fills and frames are dropped without the caller being able to tell
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-400
+  risk:
+    impact: 60
+    likelihood: 60
+  attributes:
+    source: spec.md#Edge-Cases
+    assets:
+    - asset.received-frames
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - flow.link-to-kernel
+    - component.rx-ring
+    profile: stride
+    severity: medium
+    technique: resource-exhaustion
+- id: threat.ring-offsets-out-of-bounds
+  name: Offsets in a ring block (kernel bug, version mismatch, or a block read while the kernel owns it) make the
+    backend form a slice outside the mapping
+  categories:
+  - Tampering
+  cwes:
+  - CWE-125
+  - CWE-787
+  risk:
+    impact: 95
+    likelihood: 30
+  attributes:
+    source: research.md#Ring-walk-TPACKET_V3
+    assets:
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - flow.ring-to-walker
+    - component.ring-walker
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.unfiltered-window
+  name: Frames arrive between bind and filter attach, or a user BPF program the kernel would reject is accepted,
+    so the caller sees traffic its filter excludes
+  categories:
+  - Tampering
+  cwes:
+  - CWE-362
+  risk:
+    impact: 50
+    likelihood: 40
+  attributes:
+    source: research.md#Linux-open-sequence
+    assets:
+    - asset.received-frames
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.bpf
+    - component.linux-backend
+    profile: stride
+    severity: medium
+    technique: injection
+mitigations:
+- id: mitigation.borrowed-packets
+  name: Packet borrows the Socket mutably; a block is released only at the next receive
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.packet-outlives-block
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/lib.rs
+    - src/sys/linux.rs
+- id: mitigation.bounded-buffers-and-counted-drops
+  name: Ring and buffers have a fixed size; kernel drop counters are accumulated and readable
+  riskReduction: 60
+  attributes:
+    threats:
+    - threat.ring-exhaustion
+    status: verified
+    kind: detective
+    requirements:
+    - SR-008
+    touchpoints:
+    - src/sys/linux.rs
+    - src/sys/bsd.rs
+- id: mitigation.bounded-frame-handling
+  name: 'Re-insertion and length reporting are bounds-checked and total: captured and wire lengths reported, truncation
+    flagged, never a panic'
+  riskReduction: 70
+  attributes:
+    threats:
+    - threat.hostile-frame-shape
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-003
+    touchpoints:
+    - src/vlan.rs
+    - src/ring.rs
+    - src/packet.rs
+- id: mitigation.checked-ring-walk
+  name: Blocks are read only after TP_STATUS_USER is observed with acquire ordering; every kernel offset is checked
+    against the block before a slice is formed
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.ring-offsets-out-of-bounds
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/ring.rs
+    - src/sys/linux.rs
+- id: mitigation.close-on-exec
+  name: Every descriptor is opened close-on-exec
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.fd-inherited-by-child
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-006
+    touchpoints:
+    - src/sys/linux.rs
+    - src/sys/bsd.rs
+- id: mitigation.drop-capabilities
+  name: drop_capabilities() clears the process's capability sets once sockets are open; open sockets keep working
+  riskReduction: 70
+  attributes:
+    threats:
+    - threat.capability-retained
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-005
+    touchpoints:
+    - src/lib.rs
+    - src/sys/linux.rs
+    - README.md
+- id: mitigation.explicit-promiscuity
+  name: Promiscuous and all-multicast are off unless the caller asks
+  riskReduction: 70
+  attributes:
+    threats:
+    - threat.promiscuous-disclosure
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-007
+    touchpoints:
+    - src/config.rs
+- id: mitigation.filter-before-bind
+  name: The socket is created with protocol 0, the filter attached, then bound; user programs validated as the kernel
+    validates them
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.unfiltered-window
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-004
+    touchpoints:
+    - src/sys/linux.rs
+    - src/sys/bsd.rs
+    - src/bpf.rs
+- id: mitigation.txtime-opt-in-and-reported
+  name: send_at is refused unless launch time was configured; dropped launch-time frames are drained from the error
+    queue and counted
+  riskReduction: 60
+  attributes:
+    threats:
+    - threat.launch-time-abuse
+    status: required
+    kind: detective
+    requirements:
+    - SR-009
+    touchpoints:
+    - src/sys/linux.rs
+requirements:
+- id: SR-001
+  statement: The ring walker MUST NOT form a slice outside the block, and MUST NOT read a block whose status lacks
+    TP_STATUS_USER.
+  priority: P1
+  mitigations:
+  - mitigation.checked-ring-walk
+  acceptance:
+  - given: a synthetic block whose frame claims data beyond the block
+    then: the walk ends and the rest of the block is skipped
+    when: it is walked
+  - given: a block owned by the kernel
+    then: it reads nothing
+    when: the walker starts
+  tasks: []
+- id: SR-002
+  statement: A received Packet MUST borrow the Socket so that no further receive, and no block release, can happen
+    while it is alive.
+  priority: P1
+  mitigations:
+  - mitigation.borrowed-packets
+  acceptance:
+  - given: a Packet from recv
+    then: the program does not compile (compile-fail doc test)
+    when: the caller calls recv again while holding it
+  tasks: []
+- id: SR-003
+  statement: 'VLAN re-insertion and length reporting MUST be total over every input: no panic, captured length never
+    above wire length, truncation flagged.'
+  priority: P1
+  mitigations:
+  - mitigation.bounded-frame-handling
+  acceptance:
+  - given: any buffer, start, length and tag
+    then: it either succeeds inside the buffer or leaves it untouched, never panicking (property test)
+    when: re-insertion runs
+  tasks: []
+- id: SR-004
+  statement: The Linux backend MUST attach the filter before binding, and Program::new MUST reject what the kernel
+    rejects (empty, too long, jumps past the end, bad scratch slot, no final return).
+  priority: P2
+  mitigations:
+  - mitigation.filter-before-bind
+  acceptance:
+  - given: a filtered socket on a busy veth
+    then: none of another EtherType appears
+    when: the first frames are received
+  - given: an invalid program
+    then: it returns InvalidInput
+    when: Program::new runs
+  tasks: []
+- id: SR-005
+  statement: rawether MUST offer drop_capabilities() that leaves the process with no effective or permitted capabilities
+    while open sockets keep receiving and sending.
+  priority: P1
+  mitigations:
+  - mitigation.drop-capabilities
+  acceptance:
+  - given: a socket opened with CAP_NET_RAW
+    then: CapEff and CapPrm are zero and the socket still sends and receives
+    when: drop_capabilities() returns
+  tasks: []
+- id: SR-006
+  statement: Every descriptor rawether opens MUST be close-on-exec.
+  priority: P1
+  mitigations:
+  - mitigation.close-on-exec
+  acceptance:
+  - given: an open socket
+    then: FD_CLOEXEC is set
+    when: its descriptor flags are read
+  tasks: []
+- id: SR-007
+  statement: A default Config MUST NOT enable promiscuous or all-multicast mode.
+  priority: P2
+  mitigations:
+  - mitigation.explicit-promiscuity
+  acceptance:
+  - given: Config::new(iface)
+    then: promiscuous and all-multicast are false
+    when: it is inspected
+  tasks: []
+- id: SR-008
+  statement: stats() MUST report kernel drops so that received plus dropped equals what passed the filter.
+  priority: P2
+  mitigations:
+  - mitigation.bounded-buffers-and-counted-drops
+  acceptance:
+  - given: 100 000 frames sent over veth
+    then: received plus dropped equals the frames sent
+    when: stats() is read after receiving
+  tasks: []
+- id: SR-009
+  statement: send_at MUST fail with InvalidInput unless Config::tx_time was set, and tx_errors() MUST count frames
+    the kernel reported dropped.
+  priority: P2
+  mitigations:
+  - mitigation.txtime-opt-in-and-reported
+  acceptance:
+  - given: a socket without tx_time
+    then: it returns InvalidInput
+    when: send_at is called
+  - given: a socket with tx_time on an interface without an etf qdisc
+    then: tx_errors() counts it or the send fails
+    when: a frame is sent with a launch time
+  tasks: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: src/ring.rs::tests::offsets_that_point_outside_the_block_end_the_walk
+  result: pass
+  verdict: verified
+  justification: Synthetic blocks with a frame claiming 100000 octets and a first-frame offset past the end end
+    the walk and skip the rest; a block with status 0 yields no cursor (a_block_still_owned_by_the_kernel_is_not_read).
+    The ring path of the veth suite (8/8) reads real blocks through the same walker.
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: src/lib.rs::Socket::recv (compile_fail doctest)
+  result: pass
+  verdict: verified
+  justification: The doctest calls recv twice while the first Packet is alive and is required not to compile; cargo
+    test --doc reports it compile-fail ok. The ring is released only at the next recv (src/sys/linux.rs ring_next).
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-003.2026-11-09
+  requirement: SR-003
+  method: test
+  evidence: src/vlan.rs::tests::reinsertion_is_total_over_small_inputs
+  result: pass
+  verdict: verified
+  justification: 'Exhaustive over buffers up to 24 octets and every start/length: either the tag lands inside the
+    buffer with the rest intact or the buffer is untouched; no panic. tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp
+    asserts wire length equals captured length and the tag position on real frames, on both receive paths.'
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-004.2026-11-09
+  requirement: SR-004
+  method: test
+  evidence: tests/veth.rs::only_the_chosen_ethertypes_arrive_tagged_or_not_each_with_a_timestamp
+  result: pass
+  verdict: verified
+  justification: A frame of another EtherType sent first is not delivered; src/bpf.rs::tests::the_builder_refuses_what_the_kernel_would
+    rejects empty, oversized, out-of-range-jump, bad-scratch and no-return programs. The open sequence creates the
+    socket with protocol 0 and attaches the filter before bind (src/sys/linux.rs open).
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-005.2026-11-09
+  requirement: SR-005
+  method: test
+  evidence: tests/veth.rs::dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening
+  result: pass
+  verdict: verified
+  justification: 'In a child process: after drop_capabilities, CapEff and CapPrm in /proc/thread-self/status are
+    zero, the already open socket sends and receives, and a new open fails PermissionDenied naming CAP_NET_RAW.
+    Passed on ring and plain paths.'
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-006.2026-11-09
+  requirement: SR-006
+  method: test
+  evidence: tests/veth.rs::every_descriptor_is_close_on_exec
+  result: pass
+  verdict: verified
+  justification: F_GETFD on an open Linux socket has FD_CLOEXEC; the BSD backend opens /dev/bpf with O_CLOEXEC and
+    sets FD_CLOEXEC on its membership socket (src/sys/bsd.rs open_device, join_groups) — reviewed, not run on BSD.
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-007.2026-11-09
+  requirement: SR-007
+  method: test
+  evidence: src/lib.rs::tests::the_default_configuration_is_neither_promiscuous_nor_all_multicast
+  result: pass
+  verdict: verified
+  justification: Config::new leaves both flags false; the backends enable them only from those flags.
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-008.2026-11-09
+  requirement: SR-008
+  method: test
+  evidence: tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped
+  result: pass
+  verdict: verified
+  justification: 100000 frames sent in batches; received plus stats().dropped equals 100000 and stats().received
+    equals the frames seen, on both receive paths.
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+- id: verification.sr-009.2026-11-09
+  requirement: SR-009
+  method: review
+  evidence: src/sys/linux.rs:send_at
+  result: inconclusive
+  verdict: implemented-unverified
+  justification: 'Scenario 1 passed (send_at without tx_time is InvalidInput, tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it).
+    Scenario 2 (etf drops a past launch time and tx_errors counts it) is implemented and tested, but the test skipped:
+    the local Docker kernel has no sch_etf. It runs in the ubuntu-24.04 CI lane.'
+  verified_at: '2026-11-09T10:16:23Z'
+  commit: 0c1eb6b
+decisions: []

@@ -1,0 +1,39 @@
+# rawether — project-level baseline threat model. Feature models under specs/ inherit these trust
+# zones, actors and assets; feature-specific threats live in each feature's threat-model.yaml.
+otmVersion: "0.2.0"
+project:
+  id: rawether
+  name: rawether
+threatspec:
+  version: "0.1"
+  generated: "2026-11-09T10:30:00Z"
+  profiles: [stride]
+  extends: null
+  sources: []
+  actors:
+    - {id: actor.segment-peer, name: "Any device or attacker able to put frames on the link", trust: untrusted}
+    - {id: actor.caller, name: "The application using rawether", trust: trusted}
+    - {id: actor.child-process, name: "A program the caller later executes", trust: semi-trusted}
+    - {id: actor.kernel, name: "The kernel sharing the receive ring", trust: privileged}
+  surfaces: [external-input, network-boundary, authorization]
+  dispositions: []
+trustZones:
+  - {id: tz.link, name: "The Ethernet segment (unauthenticated)", risk: {trustRating: 1}}
+  - {id: tz.process, name: "The caller's process", risk: {trustRating: 8}}
+  - {id: tz.kernel, name: "The kernel and its shared ring", risk: {trustRating: 9}}
+assets:
+  - id: asset.process-memory
+    name: "Memory safety of the caller's process"
+    risk: {confidentiality: 80, integrity: 95, availability: 80}
+    attributes: {type: business-data, classification: internal, source: "THREAT_MODEL.md#Assets"}
+  - id: asset.raw-capability
+    name: "The raw-socket capability (CAP_NET_RAW, or /dev/bpf access) and the open socket"
+    risk: {confidentiality: 60, integrity: 85, availability: 30}
+    attributes: {type: credential, classification: restricted, source: "THREAT_MODEL.md#Assets"}
+components: []
+dataflows: []
+threats: []
+mitigations: []
+requirements: []
+verification: []
+decisions: []

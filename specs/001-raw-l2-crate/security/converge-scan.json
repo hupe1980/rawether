@@ -1,0 +1,538 @@
+{
+  "feature": "001-raw-l2-crate",
+  "commit": "0c1eb6b",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "The ring walker MUST NOT form a slice outside the block, and MUST NOT read a block whose status lacks TP_STATUS_USER.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a synthetic block whose frame claims data beyond the block",
+          "then": "the walk ends and the rest of the block is skipped",
+          "when": "it is walked"
+        },
+        {
+          "given": "a block owned by the kernel",
+          "then": "it reads nothing",
+          "when": "the walker starts"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-ring-walk"
+      ],
+      "tasks": [
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[P] [SR-001] src/ring.rs: TPACKET_V3 block walker over a byte slice with every offset bounds-checked; unit tests over synthetic blocks (including malformed offsets)"
+        },
+        {
+          "id": "T012",
+          "done": true,
+          "text": "[US2] [SR-001] [SR-002] Linux TPACKET_V3 ring in src/sys/linux.rs using src/ring.rs: setup, `poll` wait, block release, VLAN restore through `PACKET_RESERVE`, timestamp source from status bits; `RxMode::Auto` fallback to plain"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/ring.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "A received Packet MUST borrow the Socket so that no further receive, and no block release, can happen while it is alive.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a Packet from recv",
+          "then": "the program does not compile (compile-fail doc test)",
+          "when": "the caller calls recv again while holding it"
+        }
+      ],
+      "mitigations": [
+        "mitigation.borrowed-packets"
+      ],
+      "tasks": [
+        {
+          "id": "T010",
+          "done": true,
+          "text": "[US1] [SR-002] [SR-005] src/sys/unsupported.rs and src/sys/mod.rs dispatch; `Socket` in src/lib.rs (`AsFd`, `AsRawFd`, `recv`, `try_recv`, `send`, `set_nonblocking`, `interface`, `index`, `mac_address`); `Packet<'_>` borrows `&mut Socket` with a compile-fail doc test; `drop_capabilities()` (Linux `capset` to empty, a no-op elsewhere)"
+        },
+        {
+          "id": "T012",
+          "done": true,
+          "text": "[US2] [SR-001] [SR-002] Linux TPACKET_V3 ring in src/sys/linux.rs using src/ring.rs: setup, `poll` wait, block release, VLAN restore through `PACKET_RESERVE`, timestamp source from status bits; `RxMode::Auto` fallback to plain"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/lib.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-003",
+      "statement": "VLAN re-insertion and length reporting MUST be total over every input: no panic, captured length never above wire length, truncation flagged.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "any buffer, start, length and tag",
+          "then": "it either succeeds inside the buffer or leaves it untouched, never panicking (property test)",
+          "when": "re-insertion runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.bounded-frame-handling"
+      ],
+      "tasks": [
+        {
+          "id": "T007",
+          "done": true,
+          "text": "[P] [SR-003] src/vlan.rs: in-place tag re-insertion; unit tests and an exhaustive small-input property test (no panic, untouched on refusal)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/packet.rs",
+            "exists": true
+          },
+          {
+            "path": "src/ring.rs",
+            "exists": true
+          },
+          {
+            "path": "src/vlan.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-004",
+      "statement": "The Linux backend MUST attach the filter before binding, and Program::new MUST reject what the kernel rejects (empty, too long, jumps past the end, bad scratch slot, no final return).",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a filtered socket on a busy veth",
+          "then": "none of another EtherType appears",
+          "when": "the first frames are received"
+        },
+        {
+          "given": "an invalid program",
+          "then": "it returns InvalidInput",
+          "when": "Program::new runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.filter-before-bind"
+      ],
+      "tasks": [
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[P] [SR-004] src/bpf.rs: `Insn`, `Program`, `Program::ethertypes` (tagged 0x8100/0x88a8 and untagged), classic-BPF interpreter `Program::run`; unit tests over synthetic frames"
+        },
+        {
+          "id": "T008",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-006] src/sys/linux.rs: open sequence (research \"Linux open sequence\"), ifindex/MAC, filter, membership, promiscuous, plain `recvmsg` path with `PACKET_AUXDATA` + `SO_TIMESTAMPING`, `send` via `sendto`, error mapping (`PermissionDenied` naming `CAP_NET_RAW`, `NotFound` naming the interface); `SOCK_CLOEXEC`; filter attached before `bind`"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-005] [SR-006] tests/veth.rs (skips unless `RAWETHER_TEST_IFACE`/`RAWETHER_TEST_PEER`): filter tagged/untagged, multicast join, timeouts, permission error, `FD_CLOEXEC` set, `drop_capabilities()` leaves CapEff/CapPrm zero and the socket still works, `send` of a frame under 14 octets is `InvalidInput`; a macOS test opens `lo0` and accepts success or `PermissionDenied` (SC-004); scripts/veth-test.sh (sudo, or `--docker`)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/bpf.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-005",
+      "statement": "rawether MUST offer drop_capabilities() that leaves the process with no effective or permitted capabilities while open sockets keep receiving and sending.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a socket opened with CAP_NET_RAW",
+          "then": "CapEff and CapPrm are zero and the socket still sends and receives",
+          "when": "drop_capabilities() returns"
+        }
+      ],
+      "mitigations": [
+        "mitigation.drop-capabilities"
+      ],
+      "tasks": [
+        {
+          "id": "T010",
+          "done": true,
+          "text": "[US1] [SR-002] [SR-005] src/sys/unsupported.rs and src/sys/mod.rs dispatch; `Socket` in src/lib.rs (`AsFd`, `AsRawFd`, `recv`, `try_recv`, `send`, `set_nonblocking`, `interface`, `index`, `mac_address`); `Packet<'_>` borrows `&mut Socket` with a compile-fail doc test; `drop_capabilities()` (Linux `capset` to empty, a no-op elsewhere)"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-005] [SR-006] tests/veth.rs (skips unless `RAWETHER_TEST_IFACE`/`RAWETHER_TEST_PEER`): filter tagged/untagged, multicast join, timeouts, permission error, `FD_CLOEXEC` set, `drop_capabilities()` leaves CapEff/CapPrm zero and the socket still works, `send` of a frame under 14 octets is `InvalidInput`; a macOS test opens `lo0` and accepts success or `PermissionDenied` (SC-004); scripts/veth-test.sh (sudo, or `--docker`)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "README.md",
+            "exists": true
+          },
+          {
+            "path": "src/lib.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-006",
+      "statement": "Every descriptor rawether opens MUST be close-on-exec.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "an open socket",
+          "then": "FD_CLOEXEC is set",
+          "when": "its descriptor flags are read"
+        }
+      ],
+      "mitigations": [
+        "mitigation.close-on-exec"
+      ],
+      "tasks": [
+        {
+          "id": "T008",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-006] src/sys/linux.rs: open sequence (research \"Linux open sequence\"), ifindex/MAC, filter, membership, promiscuous, plain `recvmsg` path with `PACKET_AUXDATA` + `SO_TIMESTAMPING`, `send` via `sendto`, error mapping (`PermissionDenied` naming `CAP_NET_RAW`, `NotFound` naming the interface); `SOCK_CLOEXEC`; filter attached before `bind`"
+        },
+        {
+          "id": "T009",
+          "done": true,
+          "text": "[US1] [SR-006] src/sys/bsd.rs: `/dev/bpf` backend (research \"BSD/macOS\"), multicast via `SIOCADDMULTI`, MAC via `getifaddrs`; device opened `O_CLOEXEC`"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US1] [SR-004] [SR-005] [SR-006] tests/veth.rs (skips unless `RAWETHER_TEST_IFACE`/`RAWETHER_TEST_PEER`): filter tagged/untagged, multicast join, timeouts, permission error, `FD_CLOEXEC` set, `drop_capabilities()` leaves CapEff/CapPrm zero and the socket still works, `send` of a frame under 14 octets is `InvalidInput`; a macOS test opens `lo0` and accepts success or `PermissionDenied` (SC-004); scripts/veth-test.sh (sudo, or `--docker`)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-007",
+      "statement": "A default Config MUST NOT enable promiscuous or all-multicast mode.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "Config::new(iface)",
+          "then": "promiscuous and all-multicast are false",
+          "when": "it is inspected"
+        }
+      ],
+      "mitigations": [
+        "mitigation.explicit-promiscuity"
+      ],
+      "tasks": [
+        {
+          "id": "T004",
+          "done": true,
+          "text": "[P] [SR-007] src/config.rs: `Config` builder, `Filter` (\"an empty EtherType set is `InvalidInput`\"), `RxMode`, `Timestamping` (hardware \"falls back to software, never mislabelled\"), `TxTime`, `Clock`; promiscuous and all-multicast default off (unit test)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/config.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-008",
+      "statement": "stats() MUST report kernel drops so that received plus dropped equals what passed the filter.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "100 000 frames sent over veth",
+          "then": "received plus dropped equals the frames sent",
+          "when": "stats() is read after receiving"
+        }
+      ],
+      "mitigations": [
+        "mitigation.bounded-buffers-and-counted-drops"
+      ],
+      "tasks": [
+        {
+          "id": "T013",
+          "done": true,
+          "text": "[US2] [SR-008] [SR-009] Linux `send_batch` (`sendmmsg`, reused `mmsghdr`/`iovec`), `send_at` (`SO_TXTIME` + `SCM_TXTIME`), `SO_PRIORITY`, `PACKET_QDISC_BYPASS`, `SIOCSHWTSTAMP` best-effort, `stats()` (`PACKET_STATISTICS` accumulated), `clock_now`; BSD: `send_batch` loop, `stats` via `BIOCGSTATS`, `send_at`/hardware \u2192 `Unsupported`"
+        },
+        {
+          "id": "T014",
+          "done": true,
+          "text": "[US2] [SR-008] [SR-009] tests/veth.rs: ring and plain path (`RAWETHER_RX`), 100 000-frame batch with received + dropped = sent, timestamp on every frame, `send_at` without `tx_time` is `InvalidInput`, `send_at` without an `etf` qdisc returns an error or is counted by `tx_errors()`, zero allocations in a steady-state loop (counting allocator)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-009",
+      "statement": "send_at MUST fail with InvalidInput unless Config::tx_time was set, and tx_errors() MUST count frames the kernel reported dropped.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a socket without tx_time",
+          "then": "it returns InvalidInput",
+          "when": "send_at is called"
+        },
+        {
+          "given": "a socket with tx_time on an interface without an etf qdisc",
+          "then": "tx_errors() counts it or the send fails",
+          "when": "a frame is sent with a launch time"
+        }
+      ],
+      "mitigations": [
+        "mitigation.txtime-opt-in-and-reported"
+      ],
+      "tasks": [
+        {
+          "id": "T013",
+          "done": true,
+          "text": "[US2] [SR-008] [SR-009] Linux `send_batch` (`sendmmsg`, reused `mmsghdr`/`iovec`), `send_at` (`SO_TXTIME` + `SCM_TXTIME`), `SO_PRIORITY`, `PACKET_QDISC_BYPASS`, `SIOCSHWTSTAMP` best-effort, `stats()` (`PACKET_STATISTICS` accumulated), `clock_now`; BSD: `send_batch` loop, `stats` via `BIOCGSTATS`, `send_at`/hardware \u2192 `Unsupported`"
+        },
+        {
+          "id": "T014",
+          "done": true,
+          "text": "[US2] [SR-008] [SR-009] tests/veth.rs: ring and plain path (`RAWETHER_RX`), 100 000-frame batch with received + dropped = sent, timestamp on every frame, `send_at` without `tx_time` is `InvalidInput`, `send_at` without an `etf` qdisc returns an error or is counted by `tx_errors()`, zero allocations in a steady-state loop (counting allocator)"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.capability-retained",
+    "threat.fd-inherited-by-child",
+    "threat.hostile-frame-shape",
+    "threat.launch-time-abuse",
+    "threat.packet-outlives-block",
+    "threat.promiscuous-disclosure",
+    "threat.ring-exhaustion",
+    "threat.ring-offsets-out-of-bounds",
+    "threat.unfiltered-window"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-005",
+      "summary": "Requirement 'SR-005' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-006",
+      "summary": "Requirement 'SR-006' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-003",
+      "summary": "Requirement 'SR-003' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-004",
+      "summary": "Requirement 'SR-004' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-007",
+      "summary": "Requirement 'SR-007' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-008",
+      "summary": "Requirement 'SR-008' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-009",
+      "summary": "Requirement 'SR-009' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 9,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 9
+    },
+    "threats_by_severity": {
+      "high": 2,
+      "medium": 5,
+      "low": 2
+    },
+    "mitigations": 9,
+    "requirements": 9,
+    "requirements_with_tasks": 9,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "high": 2,
+      "medium": 7
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": "/Users/hupe/Workspaces/hupe1980/rawether/.specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

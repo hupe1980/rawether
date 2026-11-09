@@ -22,3 +22,15 @@ rustc-ice-*.txt
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# macOS
+.DS_Store
+
+# Private design notes and agent configuration. The design records (specs/, .specify/) are
+# public; they never point here.
+/concepts/
+/.claude/
+/CLAUDE.md
+# Generated: the Spec Kit extension cache and threat-model generator inputs.
+/.specify/extensions/.cache/
+/specs/**/security/incoming-*
