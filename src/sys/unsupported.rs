@@ -6,8 +6,8 @@ use std::io;
 use std::time::Duration;
 
 use crate::bpf::Program;
-use crate::config::{Clock, Config};
-use crate::packet::{MacAddr, Packet, RxPath, Stats};
+use crate::config::{Clock, Config, Timestamping};
+use crate::packet::{MacAddr, Packet, RxPath, Stats, TxErrors};
 
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -51,7 +51,11 @@ impl Inner {
     pub(crate) fn stats(&mut self) -> io::Result<Stats> {
         match self.0 {}
     }
-    pub(crate) fn tx_errors(&mut self) -> io::Result<u64> {
+    pub(crate) fn timestamping(&self) -> Timestamping {
+        match self.0 {}
+    }
+
+    pub(crate) fn tx_errors(&mut self) -> io::Result<TxErrors> {
         match self.0 {}
     }
     pub(crate) fn set_nonblocking(&mut self, _: bool) -> io::Result<()> {

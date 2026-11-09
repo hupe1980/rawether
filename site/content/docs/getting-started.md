@@ -35,7 +35,9 @@ sudo setcap cap_net_raw+ep target/debug/my-tool
 docker run --cap-add NET_RAW …
 ```
 
-Two features need more. `Timestamping::Hardware` also needs `CAP_NET_ADMIN`, because rawether switches on the NIC's timestamping when the socket opens; without it, frames get software timestamps instead. Launch times need an `etf` or `taprio` qdisc, which you install with `tc`, outside your program.
+Two features may need more. `Timestamping::Hardware` needs `CAP_NET_ADMIN` only to switch on a NIC that stamps nothing yet; see [Timestamps](@/docs/timestamps.md). Launch times need an `etf` or `taprio` qdisc, which you install with `tc`, outside your program.
+
+After opening your sockets, call `rawether::drop_capabilities()`. It sheds every capability for the whole process, and refuses with an error if another thread is already running, so call it before spawning threads or building an async runtime.
 
 ### macOS and FreeBSD
 

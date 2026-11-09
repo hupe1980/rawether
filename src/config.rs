@@ -50,12 +50,12 @@ impl Default for RingConfig {
 /// How received frames reach user space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RxMode {
-    /// The ring with the default geometry where the platform has one, else one system call per
-    /// frame.
+    /// The ring with the default geometry where the platform has one and the kernel grants it,
+    /// else one system call per frame. [`Socket::rx_path`] says which.
     #[default]
     Auto,
-    /// A TPACKET_V3 ring with this geometry, falling back to [`RxMode::Plain`] if the kernel
-    /// refuses it.
+    /// A TPACKET_V3 ring with this geometry. Opening fails if the kernel refuses it (Linux);
+    /// other platforms have no ring and use their only path.
     Ring(RingConfig),
     /// One `recvmsg` per frame: the lowest latency, the most system calls.
     Plain,
@@ -69,8 +69,11 @@ pub enum Timestamping {
     /// The kernel's, on `CLOCK_REALTIME`.
     #[default]
     Software,
-    /// The NIC's where it has them (needs `CAP_NET_ADMIN` to enable on Linux); otherwise the
-    /// kernel's. Each frame says which it got.
+    /// The NIC's where it stamps received frames, otherwise the kernel's; each frame says which
+    /// it got, and [`Socket::timestamping`] what the socket delivers. On Linux the NIC's
+    /// device-wide configuration is read first and never lowered: a NIC that already stamps
+    /// (for example for `ptp4l`) is used as it is, and only one that stamps nothing is widened,
+    /// which needs `CAP_NET_ADMIN`.
     Hardware,
 }
 
@@ -89,15 +92,15 @@ pub enum Clock {
 ///
 /// A frame sent with [`Socket::send_at`] leaves at the given time on `clock`. The egress queue
 /// needs a qdisc that honours it (`etf`, or `taprio` in txtime-assisted mode); without one the
-/// kernel drops the frame.
+/// launch time is ignored and the frame leaves at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TxTime {
     /// The clock launch times are on.
     pub clock: Clock,
     /// `SOF_TXTIME_DEADLINE_MODE`: the time is a deadline rather than an exact launch time.
     pub deadline: bool,
-    /// `SOF_TXTIME_REPORT_ERRORS`: dropped frames are reported on the error queue
-    /// ([`Socket::tx_errors`]).
+    /// `SOF_TXTIME_REPORT_ERRORS`: frames the qdisc drops are reported, by reason, through
+    /// [`Socket::tx_errors`].
     pub report_errors: bool,
 }
 
@@ -282,11 +285,15 @@ impl Config {
                 format!("{m} is not a multicast address"),
             ));
         }
+        // The kernel counts frames in a `u32` and the mapping is `block_size × block_count`
+        // octets: both must fit, on every pointer width.
         if let RxMode::Ring(r) = self.rx
             && (r.block_count == 0
                 || !r.block_size.is_power_of_two()
                 || r.frame_size < 128
-                || r.frame_size > r.block_size)
+                || r.frame_size > r.block_size
+                || (r.block_size / r.frame_size).checked_mul(r.block_count).is_none()
+                || (r.block_size as usize).checked_mul(r.block_count as usize).is_none())
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -309,6 +316,11 @@ mod tests {
         assert!(Config::new("eth0").join(MacAddr([1, 0x80, 0xc2, 0, 0, 0xe])).validate().is_ok());
         let ring = RingConfig { block_size: 1000, ..RingConfig::default() };
         assert!(Config::new("eth0").rx_mode(RxMode::Ring(ring)).validate().is_err());
+        // Spec 003 SR-008: sizes that overflow are refused before any system call.
+        let huge = RingConfig { block_size: 1 << 31, frame_size: 128, block_count: u32::MAX, retire_ms: 1 };
+        assert!(Config::new("eth0").rx_mode(RxMode::Ring(huge)).validate().is_err());
+        let none = RingConfig { block_count: 0, ..RingConfig::default() };
+        assert!(Config::new("eth0").rx_mode(RxMode::Ring(none)).validate().is_err());
         assert!(Config::new("eth0").ethertypes(&[]).program().is_err());
         assert!(Config::new("eth0").ethertypes(&[0x88cc]).program().expect("program").is_some());
     }

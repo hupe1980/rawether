@@ -61,7 +61,7 @@ std::thread::spawn(move || -> std::io::Result<()> {
 
 `Socket` is `Send`, so it can move to that thread. It is not `Sync`: receiving needs `&mut`, so one thread owns the receive side.
 
-On Linux, call `drop_capabilities()` before spawning threads. Capabilities are per thread, and threads spawned afterwards inherit the empty sets.
+On Linux, call `drop_capabilities()` before spawning threads: capabilities are per thread, so it refuses while another thread exists. A multi-threaded tokio runtime starts its workers when it is built, so open the sockets and drop the privilege in a plain `fn main` first, then build the runtime (`tokio::runtime::Runtime::new()`) and move the sockets in. The `current_thread` example above starts no threads, so it can drop inside.
 
 ## Ring readiness
 

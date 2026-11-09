@@ -70,7 +70,7 @@
       <li><span class="step">3</span><strong>TPACKET_V3 ring</strong><small>The frame is written into memory shared with your process, with the VLAN tag the driver stripped put back.</small></li>
       <li><span class="step">4</span><strong><code>Packet&lt;'_&gt;</code></strong><small>A borrowed view into the ring with its lengths and timestamp. The compiler ends the borrow before the memory goes back to the kernel.</small></li>
     </ol>
-    <p class="muted small">On Linux, as shown. When the kernel refuses the ring, rawether uses <code>recvmsg</code> and says which path it is on. On macOS and FreeBSD the filter runs on the BPF device and frames arrive in a read buffer. See <a href="{{ get_url(path='@/docs/how-it-works.md') }}">How it works</a>.</p>
+    <p class="muted small">On Linux, as shown. When the kernel refuses the ring, the default mode uses <code>recvmsg</code> and says which path it is on. On macOS and FreeBSD the filter runs on the BPF device and frames arrive in a read buffer. See <a href="{{ get_url(path='@/docs/how-it-works.md') }}">How it works</a>.</p>
   </div>
 </section>
 
@@ -91,7 +91,7 @@
       </article>
       <article class="card">
         <h3>Timestamps that say whose they are</h3>
-        <p>Every frame records which clock stamped it: the NIC's (hardware), the kernel's (software), or rawether's own read for the few frames the kernel did not stamp.</p>
+        <p>Every frame records which clock stamped it: the NIC's, the kernel's, or rawether's own read. The NIC's stamping configuration is never lowered, so it is safe next to <code>ptp4l</code>.</p>
         <a href="{{ get_url(path='@/docs/timestamps.md') }}">Timestamps</a>
       </article>
       <article class="card">
@@ -121,12 +121,12 @@
       </article>
       <article class="card">
         <h3>Least privilege</h3>
-        <p>Grant <code>CAP_NET_RAW</code> to the binary, not root. Call <code>drop_capabilities()</code> once the sockets are open, and every descriptor is close-on-exec.</p>
+        <p>Grant <code>CAP_NET_RAW</code> to the binary, not root. <code>drop_capabilities()</code> sheds every capability for the whole process once the sockets are open, or refuses if a thread would keep one. Every descriptor is close-on-exec.</p>
         <a href="{{ get_url(path='@/docs/threat-model.md') }}">Threat model</a>
       </article>
       <article class="card">
         <h3>Tested on a real kernel</h3>
-        <p>Every claim about kernel behaviour is checked against a veth pair in CI, on both receive paths, including drops under load and a counting allocator for the steady state.</p>
+        <p>Kernel behaviour is checked on a veth pair in CI, on both receive paths, from drops under load to links going down. The parsers run under Miri and a fuzzer, and FreeBSD runs in a VM.</p>
         <a href="{{ get_url(path='@/docs/testing.md') }}">Testing</a>
       </article>
     </div>
@@ -148,7 +148,7 @@
           <tr><th scope="row">Multicast, promiscuous</th><td>Membership, all-multicast, promiscuous</td><td>Membership, promiscuous (covers all-multicast)</td></tr>
           <tr><th scope="row">Batched send</th><td><code>sendmmsg</code></td><td>One write per frame</td></tr>
           <tr><th scope="row">Launch time, priority, qdisc bypass</th><td><code>SO_TXTIME</code>, <code>SO_PRIORITY</code>, <code>PACKET_QDISC_BYPASS</code></td><td>Launch time refused; the others ignored</td></tr>
-          <tr><th scope="row">Drop counters</th><td><code>PACKET_STATISTICS</code></td><td><code>BIOCGSTATS</code></td></tr>
+          <tr><th scope="row">Drop counters</th><td><code>PACKET_STATISTICS</code></td><td><code>BIOCGSTATS</code>, frames read</td></tr>
           <tr><th scope="row">Privilege</th><td><code>CAP_NET_RAW</code>, dropped after opening</td><td>Read/write access to <code>/dev/bpf*</code></td></tr>
         </tbody>
       </table>

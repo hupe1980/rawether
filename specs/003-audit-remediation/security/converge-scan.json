@@ -1,0 +1,703 @@
+{
+  "feature": "003-audit-remediation",
+  "commit": "724140a",
+  "requirements": [
+    {
+      "id": "SR-001",
+      "statement": "The BSD record parser MUST accept both macOS (minimum header 18) and FreeBSD (minimum header 26) layouts, read header fields only inside the buffer, and stop without panicking at a malformed or truncated record.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a FreeBSD-layout buffer with three records",
+          "then": "three frames are returned with their lengths and timestamps",
+          "when": "it is parsed"
+        },
+        {
+          "given": "a record with hdrlen below the minimum, or a header cut off at the buffer end",
+          "then": "parsing stops and nothing panics or reads outside the buffer",
+          "when": "it is parsed"
+        },
+        {
+          "given": "random buffers",
+          "then": "no panic and every frame lies inside the buffer",
+          "when": "they are parsed with each layout"
+        }
+      ],
+      "mitigations": [
+        "mitigation.layout-aware-record-parse"
+      ],
+      "tasks": [
+        {
+          "id": "T004",
+          "done": true,
+          "text": "[US1] [SR-001] src/bpf_record.rs (new, pure, compiled on BSD, in tests and with cfg(fuzzing)): `Layout { ts_width, caplen, datalen, hdrlen, min_header, align }`, consts `MACOS` (4, 8, 12, 16, 18, 4) and `FREEBSD_LP64` (8, 16, 20, 24, 26, 8), `Layout::native()` from `libc::bpf_hdr` via `offset_of!` on BSD; `next(buf, &mut pos, layout) -> Option<Record>`, reading fields with `from_ne_bytes` inside the buffer, refusing `hdrlen < min_header`, needing only `min_header` octets for the last header"
+        },
+        {
+          "id": "T005",
+          "done": true,
+          "text": "[US1] [SR-001] src/bpf_record.rs tests: three FreeBSD records (hdrlen 26); three macOS records (hdrlen 18); hdrlen below minimum; truncated trailing header; caplen beyond the buffer; fixed-seed random buffers with both layouts (no panic, every frame inside); on BSD, `Layout::native()` equals the platform constant"
+        },
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[US1] [SR-001] [SR-012] src/sys/bsd.rs: use `bpf_record` (drop the `unsafe` record read); count delivered records for `stats().received`, `dropped` from `bs_drop`"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "fuzz/fuzz_targets/bpf_record.rs",
+            "exists": true
+          },
+          {
+            "path": "src/bpf_record.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-002",
+      "statement": "drop_capabilities MUST leave no thread of the process with an effective, permitted, inheritable or ambient capability and MUST set no_new_privs, or return an error naming the threads that still hold capabilities.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a single-threaded process with CAP_NET_RAW and an open socket",
+          "then": "every /proc/self/task/*/status shows zero CapEff, CapPrm, CapInh and CapAmb, NoNewPrivs is 1, and the socket still sends and receives",
+          "when": "drop_capabilities returns Ok"
+        },
+        {
+          "given": "a second thread holding capabilities",
+          "then": "it returns an error naming one thread",
+          "when": "drop_capabilities runs"
+        }
+      ],
+      "mitigations": [
+        "mitigation.process-wide-capability-check"
+      ],
+      "tasks": [
+        {
+          "id": "T010",
+          "done": true,
+          "text": "[US2] [SR-002] src/sys/linux.rs `drop_capabilities`: ambient clear (`PR_CAP_AMBIENT` with `PR_CAP_AMBIENT_CLEAR_ALL`, ignore `EINVAL`); bounding drop 0..=`cap_last_cap` (ignore `EPERM`/`EINVAL`); `capset` zero; `PR_SET_NO_NEW_PRIVS` checked; scan `/proc/self/task/*/status` (`CapInh`, `CapPrm`, `CapEff`, `CapAmb` hex) and return `Err` \"N other thread(s) still hold capabilities: call drop_capabilities before spawning threads (or building an async runtime)\" or \"cannot verify other threads: \u2026\"; a pure parser of status lines with unit tests"
+        },
+        {
+          "id": "T011",
+          "done": true,
+          "text": "[US2] [SR-002] tests/drop_capabilities.rs (`harness = false`, single-threaded `main`, skips without `RAWETHER_TEST_IFACE`/`PEER` or without `CAP_NET_RAW`): open a socket; spawn a thread that blocks; `drop_capabilities()` \u2192 `Err` naming 1 thread; release and join it; `drop_capabilities()` \u2192 `Ok`; every task has zero sets and `NoNewPrivs: 1`; when `CAP_SETPCAP` was held (root in Docker), `CapBnd` lacks `CAP_NET_RAW` (13) and `CAP_NET_ADMIN` (12) (US2 scenario 3); the socket still sends and receives; opening a new socket gives `PermissionDenied` naming `CAP_NET_RAW`"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/drop_capabilities.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          },
+          {
+            "path": "tests/drop_capabilities.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-003",
+      "statement": "With hardware timestamps requested, rawether MUST NOT write a NIC timestamp configuration it could not read, MUST NOT lower tx_type or narrow the RX filter, and MUST widen the RX filter only from none.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "every combination of current tx_type and rx_filter, and whether configuring is allowed",
+          "then": "the written configuration (if any) keeps tx_type and changes rx_filter only from NONE to ALL",
+          "when": "the decision runs"
+        },
+        {
+          "given": "a NIC whose configuration cannot be read",
+          "then": "no configuration is written and the socket reports software timestamps",
+          "when": "a hardware-timestamping socket opens"
+        }
+      ],
+      "mitigations": [
+        "mitigation.read-first-never-lower"
+      ],
+      "tasks": [
+        {
+          "id": "T014",
+          "done": true,
+          "text": "[US3] [SR-003] src/hwtstamp.rs (new, pure): `Current { flags, tx_type, rx_filter }`, `Plan::{Software, Hardware, Widen(Current)}`, `decide(Option<Current>) -> Plan`; exhaustive test over tx_type 0..=3 \u00d7 rx_filter 0..=15 that a widen keeps `tx_type`/`flags` and only changes NONE \u2192 ALL, and `None` \u2192 Software"
+        },
+        {
+          "id": "T015",
+          "done": true,
+          "text": "[US3] [SR-003] src/sys/linux.rs: `SIOCGHWTSTAMP` \u2192 `decide` \u2192 optional `SIOCSHWTSTAMP` (using the returned config); request `SOF_TIMESTAMPING_RX_HARDWARE | RAW_HARDWARE` and ring `PACKET_TIMESTAMP` only for the Hardware outcome; never write after a failed read"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/hwtstamp.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-004",
+      "statement": "A receive on either Linux path MUST return the socket's pending error instead of polling again when the descriptor reports an error or hang-up.",
+      "priority": "P1",
+      "acceptance": [
+        {
+          "given": "a socket waiting in recv with a 2 s timeout on the ring and on the plain path",
+          "then": "recv returns an error within 100 ms",
+          "when": "the link goes down or the interface is deleted"
+        },
+        {
+          "given": "the link back up",
+          "then": "the socket receives it again",
+          "when": "a frame is sent"
+        }
+      ],
+      "mitigations": [
+        "mitigation.socket-error-surfaces"
+      ],
+      "tasks": [
+        {
+          "id": "T021",
+          "done": true,
+          "text": "[US4] [SR-004] src/sys/linux.rs: both receive paths use `wait()`; on `Ready::Error` return `socket_error` with \"interface {name}: \u2026\"; veth tests on a private veth pair: link down \u2192 `recv` errors within 100 ms on ring and plain; link up \u2192 frames again; interface deleted \u2192 `recv` errors within 100 ms and later calls do not spin"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/mod.rs",
+            "exists": true
+          },
+          {
+            "path": "tests/veth.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-005",
+      "statement": "Control messages MUST be read only when MSG_CTRUNC is clear and cmsg_len covers the payload read.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "a control buffer with a message whose cmsg_len is shorter than the payload type",
+          "then": "the message is skipped",
+          "when": "it is parsed"
+        },
+        {
+          "given": "msg_flags with MSG_CTRUNC",
+          "then": "none is read",
+          "when": "the messages are parsed"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-control-messages"
+      ],
+      "tasks": [
+        {
+          "id": "T028",
+          "done": true,
+          "text": "[US6] [SR-005] src/sys/linux.rs plain path: skip all control messages when `MSG_CTRUNC`; a `cmsg_payload::<T>(hdr)` helper returning `None` when `cmsg_len < CMSG_LEN(size_of::<T>())`; unit test (Linux) over a hand-built control buffer with a short message"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-006",
+      "statement": "The ring walker MUST read blocks through a shared slice and borrow mutably only the octets VLAN re-insertion writes.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the ring module",
+          "then": "the walker takes &[u8], re-insertion takes a &mut range of the frame only, and Miri reports nothing",
+          "when": "its signatures are reviewed and its tests run under Miri"
+        }
+      ],
+      "mitigations": [
+        "mitigation.narrow-ring-borrows"
+      ],
+      "tasks": [
+        {
+          "id": "T027",
+          "done": true,
+          "text": "[US6] [SR-006] src/ring.rs, src/vlan.rs, src/sys/linux.rs: the walker takes `&[u8]` (`Ring::block`); re-insertion receives `Ring::frame_mut(block, start - 4 .. start + len)`; `reinsert` works on that narrow slice; SAFETY comments state exactly what is borrowed and why"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/ring.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          },
+          {
+            "path": "src/vlan.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-007",
+      "statement": "The BSD hardware-address lookup MUST derive its read pointer from the raw ifa_addr pointer, never from a reference to sockaddr_dl.",
+      "priority": "P3",
+      "acceptance": [
+        {
+          "given": "the lookup code",
+          "then": "no &sockaddr_dl is formed and the offset comes from offset_of!; the macOS test still opens lo0",
+          "when": "it is reviewed"
+        }
+      ],
+      "mitigations": [
+        "mitigation.raw-pointer-provenance"
+      ],
+      "tasks": [
+        {
+          "id": "T008",
+          "done": true,
+          "text": "[US1] [SR-007] src/sys/bsd.rs: `hardware_address` reads through `ifa_addr.cast::<u8>()` + `offset_of!(sockaddr_dl, sdl_data)` + `sdl_nlen`, bounded by `sdl_len`, never forming `&sockaddr_dl` for the read"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-008",
+      "statement": "No timeout, ring geometry or BPF program MUST cause a panic or a wrapped value, on 64-bit and 32-bit targets.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "recv with Duration::MAX",
+          "then": "it returns without panicking",
+          "when": "it runs on a non-blocking socket"
+        },
+        {
+          "given": "a ring geometry whose total size overflows u32 or usize, or a block count above the limit",
+          "then": "InvalidInput",
+          "when": "it is validated"
+        },
+        {
+          "given": "a BPF ja with k = u32::MAX",
+          "then": "it is refused, and run returns 0",
+          "when": "Program::new and Program::run run"
+        }
+      ],
+      "mitigations": [
+        "mitigation.checked-arithmetic"
+      ],
+      "tasks": [
+        {
+          "id": "T003",
+          "done": true,
+          "text": "[SR-008] src/sys/mod.rs: `deadline(timeout) -> Option<Instant>` with `checked_add` (overflow = no deadline); poll milliseconds rounded up and clamped; `wait(fd, timeout) -> io::Result<Ready>` with `Ready::{Readable, Error, Timeout}` (POLLERR/POLLHUP/POLLNVAL = Error); `socket_error(fd) -> io::Error` reading `SO_ERROR`; unit tests for rounding and overflow"
+        },
+        {
+          "id": "T017",
+          "done": true,
+          "text": "[US4] [SR-008] src/sys/linux.rs, src/sys/bsd.rs: use `deadline()`; unit/veth test `recv(Some(Duration::MAX))` on a non-blocking socket and `try_recv` with a long timeout do not panic"
+        },
+        {
+          "id": "T018",
+          "done": true,
+          "text": "[US4] [SR-008] [SR-009] src/config.rs `validate`: `block_count >= 1`, `(block_size / frame_size) \u00d7 block_count` fits `u32`, `block_size \u00d7 block_count` fits `usize`, all with `checked_mul`; unit tests at the limits"
+        },
+        {
+          "id": "T020",
+          "done": true,
+          "text": "[US4] [SR-008] src/bpf.rs: `checked_add` for jump targets in `new` and for `pc` in `run` (overflow \u2192 refuse / return 0); tests with `k = u32::MAX`"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/bpf.rs",
+            "exists": true
+          },
+          {
+            "path": "src/config.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/mod.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-009",
+      "statement": "An explicit RxMode::Ring that cannot be set up MUST fail the open with the kernel's reason; RxMode::Auto MUST fall back and report RxPath::Plain.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "RxMode::Ring with a block size that is not a page multiple",
+          "then": "it fails with InvalidInput",
+          "when": "the socket opens"
+        }
+      ],
+      "mitigations": [
+        "mitigation.explicit-ring-errors"
+      ],
+      "tasks": [
+        {
+          "id": "T018",
+          "done": true,
+          "text": "[US4] [SR-008] [SR-009] src/config.rs `validate`: `block_count >= 1`, `(block_size / frame_size) \u00d7 block_count` fits `u32`, `block_size \u00d7 block_count` fits `usize`, all with `checked_mul`; unit tests at the limits"
+        },
+        {
+          "id": "T019",
+          "done": true,
+          "text": "[US4] [SR-009] src/sys/linux.rs: `setup_ring` uses checked sizes; an explicit `RxMode::Ring` error fails `open` with the reason; `Auto` falls back; veth test: `RxMode::Ring` with a non-page-multiple block fails with `InvalidInput`"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-010",
+      "statement": "On FreeBSD a socket without see_outgoing MUST set BIOCSDIRECTION to BPF_D_IN.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "the FreeBSD backend",
+          "then": "BIOCSDIRECTION(BPF_D_IN) is issued and checked (FreeBSD CI build; review)",
+          "when": "a socket opens without see_outgoing"
+        }
+      ],
+      "mitigations": [
+        "mitigation.freebsd-direction"
+      ],
+      "tasks": [
+        {
+          "id": "T007",
+          "done": true,
+          "text": "[US1] [SR-010] src/sys/bsd.rs: on FreeBSD, `BIOCSDIRECTION` (`0x8004_4277`, `BPF_D_IN` = 0) unless `see_outgoing`, error-checked"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-011",
+      "statement": "tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters separately.",
+      "priority": "P2",
+      "acceptance": [
+        {
+          "given": "sock_extended_err records of origin TXTIME code MISSED, code INVALID_PARAM, and origin LOCAL",
+          "then": "one missed, one invalid, the LOCAL one ignored",
+          "when": "they are classified"
+        },
+        {
+          "given": "a frame with a past launch time through etf on veth",
+          "then": "missed >= 1",
+          "when": "tx_errors is read"
+        }
+      ],
+      "mitigations": [
+        "mitigation.parsed-error-queue"
+      ],
+      "tasks": [
+        {
+          "id": "T023",
+          "done": true,
+          "text": "[US5] [SR-011] src/lib.rs: `TxErrors { missed, invalid }` with `total()`; `Socket::tx_errors() -> io::Result<TxErrors>`; BSD and unsupported return the default"
+        },
+        {
+          "id": "T024",
+          "done": true,
+          "text": "[US5] [SR-011] src/sys/linux.rs `tx_errors`: read the error queue with a control buffer; for `SOL_PACKET`/`PACKET_TX_TIMESTAMP` (16) cmsgs read `sock_extended_err` (length-checked); count `ee_origin == 6` by `ee_code` (2 missed, 1 invalid); a pure `classify(origin, code)` with unit tests; veth launch-time test asserts `missed >= 1`"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [
+          "tests/veth.rs"
+        ],
+        "touchpoints": [
+          {
+            "path": "src/lib.rs",
+            "exists": true
+          },
+          {
+            "path": "src/sys/linux.rs",
+            "exists": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "SR-012",
+      "statement": "stats().received MUST count only frames that passed the filter, on every backend.",
+      "priority": "P3",
+      "acceptance": [
+        {
+          "given": "a BSD socket with a filter",
+          "then": "received equals the frames delivered (review of the counter; macOS loopback test where privileged)",
+          "when": "frames are read and stats() is read"
+        }
+      ],
+      "mitigations": [
+        "mitigation.counted-deliveries"
+      ],
+      "tasks": [
+        {
+          "id": "T006",
+          "done": true,
+          "text": "[US1] [SR-001] [SR-012] src/sys/bsd.rs: use `bpf_record` (drop the `unsafe` record read); count delivered records for `stats().received`, `dropped` from `bs_drop`"
+        },
+        {
+          "id": "T026",
+          "done": true,
+          "text": "[US5] [SR-012] src/packet.rs `Stats` rustdoc: one meaning on every platform, what `dropped` excludes"
+        }
+      ],
+      "all_tasks_done": true,
+      "existing_verification": [],
+      "evidence": {
+        "test_files": [],
+        "touchpoints": [
+          {
+            "path": "src/sys/bsd.rs",
+            "exists": true
+          }
+        ]
+      }
+    }
+  ],
+  "open_threats": [
+    "threat.bpf-record-misparse",
+    "threat.capability-kept-by-other-threads",
+    "threat.control-message-overread",
+    "threat.nic-timestamp-config-clobbered",
+    "threat.numeric-limits-panic",
+    "threat.own-frames-on-freebsd",
+    "threat.recv-spins-on-socket-error",
+    "threat.ring-mutable-alias",
+    "threat.silent-downgrade",
+    "threat.sockaddr-provenance",
+    "threat.stats-misreport",
+    "threat.tx-errors-miscounted"
+  ],
+  "decisions": [],
+  "check_findings": [
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-001",
+      "summary": "Requirement 'SR-001' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-002",
+      "summary": "Requirement 'SR-002' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-003",
+      "summary": "Requirement 'SR-003' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "high",
+      "location": "threat-model.yaml#SR-004",
+      "summary": "Requirement 'SR-004' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-005",
+      "summary": "Requirement 'SR-005' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-006",
+      "summary": "Requirement 'SR-006' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-007",
+      "summary": "Requirement 'SR-007' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-008",
+      "summary": "Requirement 'SR-008' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-009",
+      "summary": "Requirement 'SR-009' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-010",
+      "summary": "Requirement 'SR-010' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-011",
+      "summary": "Requirement 'SR-011' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    },
+    {
+      "check": "C6",
+      "severity": "medium",
+      "location": "threat-model.yaml#SR-012",
+      "summary": "Requirement 'SR-012' has no verification entry (all tasks are done but nothing verifies it)",
+      "recommendation": "Run the converge command after implementation or record evidence"
+    }
+  ],
+  "metrics": {
+    "threats": 12,
+    "needs_clarification": 0,
+    "threats_by_status": {
+      "open": 12
+    },
+    "threats_by_severity": {
+      "critical": 2,
+      "high": 2,
+      "medium": 6,
+      "low": 2
+    },
+    "mitigations": 12,
+    "requirements": 12,
+    "requirements_with_tasks": 12,
+    "requirements_verified": 0,
+    "decisions": 0,
+    "findings": {
+      "high": 4,
+      "medium": 8
+    }
+  },
+  "config": {
+    "verification": {
+      "test_command": "cargo test && scripts/veth-test.sh --docker",
+      "scanners": [],
+      "evidence_markers": [
+        "SR-"
+      ],
+      "test_dirs": [
+        "tests",
+        "test",
+        "spec",
+        "__tests__"
+      ]
+    },
+    "enforcement": "warn",
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
+  },
+  "verdict_schema": {
+    "requirement": "SR-###",
+    "verdict": "verified | implemented-unverified | partial | missing",
+    "method": "test | review | scan | manual | evidence",
+    "evidence": "path::test or record",
+    "result": "pass | fail | partial | inconclusive",
+    "justification": "one sentence"
+  }
+}

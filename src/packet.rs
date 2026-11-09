@@ -143,13 +143,34 @@ impl<'a> Packet<'a> {
     }
 }
 
-/// Counters the kernel keeps for a socket, accumulated since it was opened.
+/// Frame counters for a socket, accumulated since it was opened. They mean the same on every
+/// platform; neither counts frames lost before the socket (in the NIC or the kernel's
+/// per-CPU backlog).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
-    /// Frames that passed the filter.
+    /// Frames that passed the filter and reached the socket. Linux counts them when the kernel
+    /// queues them; macOS and FreeBSD when rawether reads them from the device.
     pub received: u64,
-    /// Frames that passed the filter and were dropped because the socket's buffer was full.
+    /// Frames that passed the filter but found the ring or buffer full.
     pub dropped: u64,
+}
+
+/// Launch-time frames the kernel dropped, by reason, since the last
+/// [`Socket::tx_errors`](crate::Socket::tx_errors).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TxErrors {
+    /// The launch time had passed, or would have by the time the frame reached the qdisc.
+    pub missed: u64,
+    /// The qdisc refused the frame's launch-time parameters, for example a clock other than
+    /// its own.
+    pub invalid: u64,
+}
+
+impl TxErrors {
+    /// All dropped frames.
+    pub fn total(&self) -> u64 {
+        self.missed + self.invalid
+    }
 }
 
 /// How frames reach user space.

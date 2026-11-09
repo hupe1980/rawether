@@ -434,7 +434,8 @@ mod tests {
             x ^= x << 17;
             x
         };
-        for _ in 0..100_000 {
+        let rounds = if cfg!(miri) { 300 } else { 100_000 }; // Miri checks soundness, not volume
+        for _ in 0..rounds {
             let len = (next() % 1601) as usize;
             let mut f: Vec<u8> = (0..len).map(|_| next() as u8).collect();
             for at in [12, 16, 20] {

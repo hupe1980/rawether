@@ -60,7 +60,7 @@ if let Some(f) = p.frame() {
 | `RxPath` | Platform | How |
 |---|---|---|
 | `Ring` | Linux | A TPACKET_V3 ring shared with the kernel. Frames are read in place, many per wake-up. The default |
-| `Plain` | Linux | One `recvmsg` per frame. Used when you ask for it, or when the kernel refuses the ring |
+| `Plain` | Linux | One `recvmsg` per frame. Used when you ask for it, or when `Auto` finds the kernel refusing the ring |
 | `Bpf` | macOS, FreeBSD | A BPF device's read buffer. Each `read` returns every frame waiting |
 
 Choose with `Config::rx_mode`:
@@ -76,7 +76,9 @@ let b = Config::new("eth0").rx_mode(RxMode::Plain);
 let c = Config::new("eth0").rx_mode(RxMode::Ring(RingConfig { block_count: 256, ..RingConfig::default() }));
 ```
 
-If the kernel refuses a ring (for example under a memory limit), the socket opens on the plain path rather than failing. Check `rx_path()` if it matters to you.
+With `Auto`, a ring the kernel refuses (for example under a memory limit) becomes the plain path; check `rx_path()` if it matters to you. An explicit `RxMode::Ring` the kernel refuses fails `open` with the reason instead. A geometry that cannot work, or whose size overflows, is refused before any system call.
+
+At low frame rates the ring adds up to `retire_ms` (1 ms by default) before a lone frame is handed over. If your budget is tighter than that, use `RxMode::Plain`, or lower `retire_ms`.
 
 ## Sizing the ring
 
@@ -95,7 +97,13 @@ On the plain and BPF paths, `Config::buffer_size` sets the receive buffer (1 MiB
 
 Many Linux drivers strip the outer 802.1Q or 802.1ad tag and pass it to the kernel as metadata (VLAN offload). Without help, your program would see a frame that never existed on the wire. rawether puts the tag back by default. On the ring it uses 4 octets of head-room reserved in front of each frame, so there is still no copy. `vlan_restored()` tells you when this happened, and `original_len()` includes the tag.
 
-Turn it off with `.restore_vlan(false)` if you want the frame as the kernel delivered it. On macOS and FreeBSD, BPF delivers tags in place, so nothing needs restoring.
+Kernels that do not report the tag's TPID (before Linux 4.x) put an 802.1ad outer tag back as 802.1Q. Turn restoration off with `.restore_vlan(false)` if you want the frame as the kernel delivered it. On macOS and FreeBSD, BPF delivers tags in place, so nothing needs restoring.
+
+## When the link goes down
+
+If the link goes down or the interface is removed while you wait, `recv` returns an error naming the interface (`ENETDOWN`). Once the link is up again, frames arrive on the same socket. A removed interface stays gone for that socket, even if one with the same name comes back, so open a new socket for it.
+
+Timeouts never overflow: `recv(Some(Duration::MAX))` waits as long as `recv(None)`.
 
 ## Drops
 
@@ -108,6 +116,6 @@ if s.dropped > 0 {
 }
 ```
 
-The counters are totals since the socket opened. `received` counts frames that passed the filter and reached you, and `dropped` counts those that passed the filter and found no room. To drop less, enlarge the ring (more blocks), read on a dedicated thread, or filter more tightly.
+The counters are totals since the socket opened, and mean the same on every platform. `received` counts frames that passed the filter and reached the socket (on macOS and FreeBSD, once rawether has read them from the device), and `dropped` counts those that passed the filter and found no room. To drop less, enlarge the ring (more blocks), read on a dedicated thread, or filter more tightly.
 
 Frames lost before the socket, in the NIC's queues or the kernel's per-CPU backlog, are not in `stats()`. Look at `ethtool -S` and `/proc/net/softnet_stat` for those.

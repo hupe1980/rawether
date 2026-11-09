@@ -73,14 +73,18 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod bpf;
+#[cfg(any(target_os = "macos", target_os = "freebsd", test, fuzzing))]
+mod bpf_record;
 mod config;
 pub mod frame;
-mod packet;
 #[cfg(any(target_os = "linux", test))]
+mod hwtstamp;
+mod packet;
+#[cfg(any(target_os = "linux", test, fuzzing))]
 mod ring;
 mod sys;
 pub mod threat_model;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", test, fuzzing))]
 mod vlan;
 
 use std::io;
@@ -88,7 +92,7 @@ use std::time::Duration;
 
 pub use config::{Clock, Config, Filter, RingConfig, RxMode, Timestamping, TxTime};
 pub use frame::{Frame, FrameBuilder, TagKind, VlanTag};
-pub use packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource};
+pub use packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
 
 /// An open raw socket on one interface.
 #[derive(Debug)]
@@ -176,10 +180,18 @@ impl Socket {
         self.inner.stats()
     }
 
-    /// Frames the kernel reported it could not send (launch time missed, no qdisc), drained
-    /// from the error queue since the last call.
-    pub fn tx_errors(&mut self) -> io::Result<u64> {
+    /// Launch-time frames the kernel dropped since the last call, by reason (Linux, with
+    /// [`TxTime::report_errors`]). Always zero elsewhere.
+    pub fn tx_errors(&mut self) -> io::Result<TxErrors> {
         self.inner.tx_errors()
+    }
+
+    /// The timestamps this socket delivers. [`Timestamping::Hardware`] when the NIC stamps
+    /// received frames; a request for hardware timestamps that the NIC cannot honour delivers
+    /// [`Timestamping::Software`]. Each frame's [`Timestamp::source`] says which clock stamped
+    /// it.
+    pub fn timestamping(&self) -> Timestamping {
+        self.inner.timestamping()
     }
 
     /// Switch non-blocking mode.
@@ -202,17 +214,32 @@ impl std::os::fd::AsRawFd for Socket {
     }
 }
 
-/// Give up the privilege that opening a socket needed, keeping every socket already open.
+/// Give up the privilege that opening a socket needed, for the whole process, keeping every
+/// socket already open.
 ///
-/// On Linux this clears the calling thread's effective, permitted and inheritable capability
-/// sets (so `CAP_NET_RAW` is gone) and sets `no_new_privs`, so no later `exec` regains
-/// privilege. Sockets keep working because the kernel checks the capability only when one is
-/// created. Capabilities are per thread: call this after opening every socket and before
-/// spawning threads or handling the first frame; threads spawned later inherit the empty sets.
+/// On Linux this clears the calling thread's effective, permitted, inheritable and ambient
+/// capability sets, removes every capability from the bounding set where the process may
+/// (with `CAP_SETPCAP`), and sets `no_new_privs`, so no later `exec` regains privilege. Open
+/// sockets keep working: the kernel checks `CAP_NET_RAW` only when one is created.
 ///
-/// On macOS and FreeBSD the privilege is access to `/dev/bpf*`, which an open descriptor already
-/// holds, and this does nothing. A process running as root keeps its user id: drop that
-/// separately.
+/// Capabilities are per thread. If any other thread of the process still holds one afterwards,
+/// or that cannot be checked (no `/proc`), this returns an error rather than leaving a thread
+/// privileged: call it after opening the sockets and before spawning threads. In an async
+/// program, that means before building a multi-threaded runtime:
+///
+/// ```no_run
+/// fn main() -> std::io::Result<()> {
+///     let sock = rawether::Config::new("eth0").ethertypes(&[0x88f7]).open()?;
+///     rawether::drop_capabilities()?; // still the only thread
+///     // ...then build the runtime (or spawn threads) and move `sock` into it.
+///     # drop(sock);
+///     Ok(())
+/// }
+/// ```
+///
+/// On macOS and FreeBSD the privilege is access to `/dev/bpf*`, which an open descriptor
+/// already holds, and this does nothing. A process running as root keeps its user id: drop
+/// that separately.
 pub fn drop_capabilities() -> io::Result<()> {
     sys::drop_capabilities()
 }
@@ -232,11 +259,53 @@ fn check_frame(frame: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Entry points into the internal parsers for the fuzz targets in `fuzz/`. Not part of the API.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzzing {
+    /// Walk one TPACKET_V3 block as the receive ring does, re-inserting stripped tags.
+    pub fn ring_walk(block: &mut [u8]) {
+        let Some(mut cur) = crate::ring::Cursor::start(block) else { return };
+        let mut found = Vec::new();
+        while let Some((at, meta)) = cur.next(block) {
+            assert!(at + meta.mac + meta.snaplen <= block.len());
+            found.push((at + meta.mac, meta.snaplen, meta.stripped_vlan()));
+        }
+        for (start, len, tag) in found {
+            if let (Some((tpid, tci)), Some(lo)) = (tag, start.checked_sub(4))
+                && let Some(region) = block.get_mut(lo..start + len)
+            {
+                let _ = crate::vlan::reinsert(region, 4, len, tpid, tci);
+            }
+        }
+    }
+
+    /// Parse a BPF read buffer with both platforms' layouts.
+    pub fn bpf_records(buf: &[u8]) {
+        for layout in [crate::bpf_record::Layout::MACOS, crate::bpf_record::Layout::FREEBSD_LP64] {
+            let mut pos = 0;
+            while let Some(r) = crate::bpf_record::next(buf, &mut pos, layout) {
+                assert!(r.start + r.caplen <= buf.len());
+            }
+        }
+    }
+
+    /// Re-insert a tag into `buf` at `start` with `len`, as the plain path does.
+    pub fn vlan_reinsert(buf: &mut [u8], start: usize, len: usize, tpid: u16, tci: u16) {
+        let before = buf.to_vec();
+        match crate::vlan::reinsert(buf, start, len, tpid, tci) {
+            Some((s, l)) => assert!(s + l <= buf.len()),
+            None => assert_eq!(buf, &before[..], "a refused re-insertion leaves the buffer alone"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // system calls
     fn opening_a_missing_interface_or_on_an_unsupported_platform_fails_cleanly() {
         let e = Socket::open(&Config::new("no-such-if0")).expect_err("no interface");
         assert!(
@@ -252,6 +321,7 @@ mod tests {
     /// without it fails naming what is missing.
     #[cfg(target_os = "macos")]
     #[test]
+    #[cfg_attr(miri, ignore)] // system calls
     fn the_loopback_interface_opens_or_says_what_access_is_missing() {
         match Socket::open(&Config::new("lo0")) {
             Ok(s) => assert_eq!(s.rx_path(), RxPath::Bpf),

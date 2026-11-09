@@ -10,10 +10,12 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering, fence};
 use std::time::{Duration, Instant};
 
-use super::unix::{ifr_name, interface_index, last_error, set_nonblocking, wait_readable};
+use super::deadline;
+use super::unix::{Ready, ifr_name, interface_index, last_error, set_nonblocking, socket_error, wait};
 use crate::bpf::Program;
 use crate::config::{Clock, Config, RingConfig, RxMode, Timestamping, TxTime};
-use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource};
+use crate::hwtstamp::{self, Plan};
+use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
 use crate::ring::{self, Cursor};
 use crate::vlan;
 
@@ -21,9 +23,13 @@ use crate::vlan;
 const TPACKET_V3: libc::c_int = 2;
 /// Head-room the kernel leaves in front of every ring frame, for VLAN re-insertion.
 const RESERVE: libc::c_uint = 4;
-/// `HWTSTAMP_FILTER_ALL` / `HWTSTAMP_TX_OFF` (`<linux/net_tstamp.h>`).
-const HWTSTAMP_FILTER_ALL: libc::c_int = 1;
-const HWTSTAMP_TX_OFF: libc::c_int = 0;
+/// `PACKET_TX_TIMESTAMP` (`<linux/if_packet.h>`): the control message carrying error-queue
+/// reports on a packet socket. Not exported by `libc`.
+const PACKET_TX_TIMESTAMP: libc::c_int = 16;
+/// `SO_EE_ORIGIN_TXTIME` and its codes (`<linux/errqueue.h>`). Not exported by `libc`.
+const SO_EE_ORIGIN_TXTIME: u8 = 6;
+const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
+const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
 /// `sockaddr_ll` follows the frame header at `TPACKET_ALIGN(sizeof(tpacket3_hdr))`; its
 /// `sll_pkttype` is octet 10.
 const SLL_PKTTYPE_IN_RING: usize = 48 + 10;
@@ -81,15 +87,27 @@ impl Ring {
         unsafe { &*self.base.as_ptr().add(offset).cast::<AtomicU32>() }
     }
 
-    /// The block as a mutable slice. Only called for a block whose `TP_STATUS_USER` bit was
-    /// observed with acquire ordering and that has not been released since: the kernel does not
-    /// touch it in that state.
-    fn block_mut(&mut self, block: usize) -> &mut [u8] {
+    /// The block as a shared slice. Only called for a block whose `TP_STATUS_USER` bit was
+    /// observed with acquire ordering and that has not been released since: in that state the
+    /// kernel does not write the block (it may still read its descriptor).
+    fn block(&self, block: usize) -> &[u8] {
         let offset = block * self.block_size;
-        // SAFETY: `[offset, offset + block_size)` lies inside the mapping, and the caller holds
-        // the block in user ownership (see above), so no other writer exists while the slice
-        // lives; `&mut self` keeps it unique on our side.
-        unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().add(offset), self.block_size) }
+        // SAFETY: `[offset, offset + block_size)` lies inside the mapping, and the block is in
+        // user ownership (see above), so nothing writes it while the shared slice lives.
+        unsafe { std::slice::from_raw_parts(self.base.as_ptr().add(offset), self.block_size) }
+    }
+
+    /// `range` of a user-owned block, mutably: one frame and the head-room in front of it, which
+    /// only VLAN re-insertion writes. `None` unless `range` lies inside the block.
+    fn frame_mut(&mut self, block: usize, range: std::ops::Range<usize>) -> Option<&mut [u8]> {
+        if range.start > range.end || range.end > self.block_size {
+            return None;
+        }
+        let offset = block * self.block_size + range.start;
+        // SAFETY: the range lies inside the block (checked) and so inside the mapping. The block
+        // is user-owned, and the kernel neither reads nor writes a frame's octets in that state;
+        // `&mut self` keeps the slice unique on our side.
+        Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().add(offset), range.len()) })
     }
 
     fn release(&mut self, block: usize) {
@@ -127,6 +145,7 @@ pub(crate) struct Inner {
     name: String,
     index: u32,
     mac: MacAddr,
+    /// The timestamping this socket delivers (a hardware request may have become software).
     timestamping: Timestamping,
     restore_vlan: bool,
     see_outgoing: bool,
@@ -136,6 +155,8 @@ pub(crate) struct Inner {
     /// Ancillary data for `recvmsg`; `u64` elements keep it aligned for `cmsghdr`.
     ctrl: [u64; 64],
     stats: Stats,
+    /// Launch-time drops read from the error queue and not yet returned by `tx_errors`.
+    tx_pending: TxErrors,
 }
 
 impl Inner {
@@ -172,13 +193,18 @@ impl Inner {
                 "PACKET_IGNORE_OUTGOING",
             );
         }
-        let hardware = cfg.timestamping == Timestamping::Hardware
-            && enable_hardware_timestamps(&fd, &cfg.interface).is_ok();
+        let timestamping = match cfg.timestamping {
+            Timestamping::Hardware if !hardware_timestamps(&fd, &cfg.interface) => Timestamping::Software,
+            t => t,
+        };
+        let hardware = timestamping == Timestamping::Hardware;
 
+        // `Auto` falls back to the plain path (and `rx_path` says so); an explicit ring that the
+        // kernel refuses is an error, not a quiet downgrade.
         let ring = match cfg.rx {
             RxMode::Plain => None,
             RxMode::Auto => setup_ring(&fd, RingConfig::default(), hardware).ok(),
-            RxMode::Ring(r) => setup_ring(&fd, r, hardware).ok(),
+            RxMode::Ring(r) => Some(setup_ring(&fd, r, hardware)?),
         };
 
         // SAFETY: an all-zero `sockaddr_ll` is a valid value of a C struct of integers.
@@ -210,7 +236,7 @@ impl Inner {
 
         // The plain path's metadata: the stripped VLAN tag and the timestamps.
         setopt(&fd, libc::SOL_PACKET, libc::PACKET_AUXDATA, &1 as &libc::c_int, "PACKET_AUXDATA")?;
-        if cfg.timestamping != Timestamping::Off {
+        if timestamping != Timestamping::Off {
             let mut flags = libc::SOF_TIMESTAMPING_RX_SOFTWARE | libc::SOF_TIMESTAMPING_SOFTWARE;
             if hardware {
                 flags |= libc::SOF_TIMESTAMPING_RX_HARDWARE | libc::SOF_TIMESTAMPING_RAW_HARDWARE;
@@ -255,7 +281,7 @@ impl Inner {
             name: cfg.interface.clone(),
             index,
             mac,
-            timestamping: cfg.timestamping,
+            timestamping,
             restore_vlan: cfg.restore_vlan,
             see_outgoing: cfg.see_outgoing,
             tx_time: cfg.tx_time,
@@ -263,6 +289,7 @@ impl Inner {
             buf,
             ctrl: [0; 64],
             stats: Stats::default(),
+            tx_pending: TxErrors::default(),
         })
     }
 
@@ -286,13 +313,17 @@ impl Inner {
         self.fd.as_fd()
     }
 
+    pub(crate) fn timestamping(&self) -> Timestamping {
+        self.timestamping
+    }
+
     pub(crate) fn recv(&mut self, timeout: Option<Duration>) -> io::Result<Option<Packet<'_>>> {
         let timeout = if self.nonblocking { Some(Duration::ZERO) } else { timeout };
-        let deadline = timeout.map(|t| Instant::now() + t);
+        let deadline = deadline(timeout);
         if self.ring.is_some() {
             let Some(found) = self.ring_next(deadline)? else { return Ok(None) };
-            let ring = self.ring.as_mut().ok_or_else(|| io::Error::other("ring vanished"))?;
-            let block = ring.block_mut(found.block);
+            let ring = self.ring.as_ref().ok_or_else(|| io::Error::other("ring vanished"))?;
+            let block = ring.block(found.block);
             let data = block
                 .get(found.start..found.start + found.len)
                 .ok_or_else(|| io::Error::other("ring frame out of range"))?;
@@ -315,58 +346,57 @@ impl Inner {
             let ring = self.ring.as_mut().ok_or_else(|| io::Error::other("no ring"))?;
             let current = ring.current;
             if let Some(mut cur) = ring.cursor {
-                let block = ring.block_mut(current);
-                let mut found = None;
+                let block = ring.block(current);
+                let mut next = None;
                 while let Some((at, meta)) = cur.next(block) {
-                    if !see_outgoing && block.get(at + SLL_PKTTYPE_IN_RING) == Some(&libc::PACKET_OUTGOING) {
-                        continue;
+                    if see_outgoing || block.get(at + SLL_PKTTYPE_IN_RING) != Some(&libc::PACKET_OUTGOING) {
+                        next = Some((at, meta));
+                        break;
                     }
-                    let (mut start, mut len) = (at + meta.mac, meta.snaplen);
-                    let mut original_len = meta.len;
-                    let mut restored = false;
-                    // The re-inserted tag needs the reserved octets in front of the frame, which
-                    // lie after the header and its `sockaddr_ll` (48 + 20).
-                    if restore
-                        && meta.mac >= 48 + 20 + RESERVE as usize
-                        && let Some((tpid, tci)) = meta.stripped_vlan()
-                        && let Some((s, l)) = vlan::reinsert(block, start, len, tpid, tci)
-                    {
-                        (start, len, restored) = (s, l, true);
-                        original_len += 4;
-                    }
-                    let timestamp = (timestamping != Timestamping::Off).then(|| Timestamp {
-                        secs: i64::from(meta.sec),
-                        nanos: meta.nsec,
-                        source: if meta.status & ring::status::TS_RAW_HARDWARE != 0 {
-                            TimestampSource::Hardware
-                        } else {
-                            TimestampSource::Software
-                        },
-                    });
-                    found = Some(Found {
-                        block: current,
-                        start,
-                        len,
-                        original_len,
-                        timestamp,
-                        vlan_restored: restored,
-                    });
-                    break;
                 }
-                if let Some(f) = found {
-                    ring.cursor = Some(cur);
-                    return Ok(Some(f));
+                let Some((at, meta)) = next else {
+                    // The block is exhausted: hand it back and move on.
+                    ring.cursor = None;
+                    ring.release(current);
+                    ring.current = (current + 1) % ring.blocks;
+                    continue;
+                };
+                ring.cursor = Some(cur);
+                let (mut start, mut len) = (at + meta.mac, meta.snaplen);
+                let mut original_len = meta.len;
+                let mut restored = false;
+                // The re-inserted tag needs the reserved octets in front of the frame, which lie
+                // after the header and its `sockaddr_ll` (48 + 20).
+                if restore
+                    && meta.mac >= 48 + 20 + RESERVE as usize
+                    && let Some((tpid, tci)) = meta.stripped_vlan()
+                    && let Some(region) = ring.frame_mut(current, start - 4..start + len)
+                    && vlan::reinsert(region, 4, len, tpid, tci).is_some()
+                {
+                    (start, len, restored) = (start - 4, len + 4, true);
+                    original_len += 4;
                 }
-                // The block is exhausted: hand it back and move on.
-                ring.cursor = None;
-                ring.release(current);
-                ring.current = (current + 1) % ring.blocks;
-                continue;
+                let timestamp = (timestamping != Timestamping::Off).then(|| Timestamp {
+                    secs: i64::from(meta.sec),
+                    nanos: meta.nsec,
+                    source: if meta.status & ring::status::TS_RAW_HARDWARE != 0 {
+                        TimestampSource::Hardware
+                    } else {
+                        TimestampSource::Software
+                    },
+                });
+                return Ok(Some(Found {
+                    block: current,
+                    start,
+                    len,
+                    original_len,
+                    timestamp,
+                    vlan_restored: restored,
+                }));
             }
             if ring.status(current).load(Ordering::Acquire) & ring::status::USER != 0 {
                 fence(Ordering::Acquire);
-                let block = ring.block_mut(current);
-                if let Some(c) = Cursor::start(block) {
+                if let Some(c) = Cursor::start(ring.block(current)) {
                     ring.cursor = Some(c);
                 } else {
                     ring.release(current);
@@ -378,10 +408,25 @@ impl Inner {
             if remaining == Some(Duration::ZERO) {
                 return Ok(None);
             }
-            if !wait_readable(self.fd.as_fd(), remaining)? {
-                return Ok(None);
+            match wait(self.fd.as_fd(), remaining)? {
+                Ready::Readable => {}
+                Ready::Timeout => return Ok(None),
+                Ready::Error => self.on_socket_error()?,
             }
         }
+    }
+
+    /// The descriptor reported an error or a hang-up. Return the socket's pending error (link
+    /// down, interface removed) — or, when it only had launch-time reports queued, count them
+    /// for `tx_errors` and carry on waiting.
+    fn on_socket_error(&mut self) -> io::Result<()> {
+        if let Some(e) = socket_error(self.fd.as_fd()) {
+            return Err(io::Error::new(e.kind(), format!("interface {}: {e}", self.name)));
+        }
+        if self.drain_error_queue()? > 0 {
+            return Ok(());
+        }
+        Err(io::Error::new(io::ErrorKind::BrokenPipe, format!("interface {}: the socket hung up", self.name)))
     }
 
     #[allow(clippy::type_complexity)]
@@ -391,8 +436,13 @@ impl Inner {
     ) -> io::Result<Option<(usize, usize, usize, Option<Timestamp>, bool)>> {
         loop {
             let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
-            if remaining.is_some() && !wait_readable(self.fd.as_fd(), remaining)? {
-                return Ok(None);
+            match wait(self.fd.as_fd(), remaining)? {
+                Ready::Readable => {}
+                Ready::Timeout => return Ok(None),
+                Ready::Error => {
+                    self.on_socket_error()?;
+                    continue;
+                }
             }
             let reserve = RESERVE as usize;
             let room = self.buf.len() - reserve;
@@ -409,24 +459,15 @@ impl Inner {
             msg.msg_controllen = size_of::<[u64; 64]>() as _;
             // SAFETY: `msg` points at live buffers (`sll`, `iov` → `buf`, `ctrl`) whose sizes it
             // states; the kernel writes only inside them. MSG_DONTWAIT because readiness was
-            // checked above or the socket is non-blocking by request.
+            // checked above.
             let n = unsafe {
                 libc::recvmsg(self.fd.as_raw_fd(), &raw mut msg, libc::MSG_TRUNC | libc::MSG_DONTWAIT)
             };
             if n < 0 {
                 let e = io::Error::last_os_error();
                 match e.kind() {
-                    io::ErrorKind::WouldBlock => {
-                        if remaining == Some(Duration::ZERO) {
-                            return Ok(None);
-                        }
-                        if remaining.is_none() {
-                            wait_readable(self.fd.as_fd(), None)?;
-                        }
-                        continue;
-                    }
-                    io::ErrorKind::Interrupted => continue,
-                    _ => return Err(io::Error::new(e.kind(), format!("recvmsg: {e}"))),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => continue,
+                    _ => return Err(io::Error::new(e.kind(), format!("interface {}: {e}", self.name))),
                 }
             }
             if !self.see_outgoing && sll.sll_pkttype == libc::PACKET_OUTGOING {
@@ -434,19 +475,25 @@ impl Inner {
             }
             let captured = (n as usize).min(room);
             let (mut vlan_tag, mut timestamp, mut wire_len) = (None, None, None);
-            // SAFETY: the kernel filled `ctrl` and set `msg_controllen`; the CMSG_* helpers walk
-            // only inside it, and each payload is read unaligned into a value of its own type.
-            unsafe {
-                let mut c = libc::CMSG_FIRSTHDR(&raw const msg);
-                while !c.is_null() {
-                    let data = libc::CMSG_DATA(c);
-                    if (*c).cmsg_level == libc::SOL_PACKET && (*c).cmsg_type == libc::PACKET_AUXDATA {
-                        let aux: libc::tpacket_auxdata =
-                            data.cast::<libc::tpacket_auxdata>().read_unaligned();
+            // A truncated control buffer may cut a message short: use none of them (the frame is
+            // still delivered, labelled by what is known).
+            let mut c = if msg.msg_flags & libc::MSG_CTRUNC == 0 {
+                // SAFETY: the kernel filled `ctrl` and set `msg_controllen`.
+                unsafe { libc::CMSG_FIRSTHDR(&raw const msg) }
+            } else {
+                std::ptr::null_mut()
+            };
+            while !c.is_null() {
+                // SAFETY: `c` is a header CMSG_FIRSTHDR/CMSG_NXTHDR returned inside `ctrl`.
+                let (level, kind) = unsafe { ((*c).cmsg_level, (*c).cmsg_type) };
+                if level == libc::SOL_PACKET && kind == libc::PACKET_AUXDATA {
+                    // SAFETY: as above.
+                    if let Some(aux) = unsafe { cmsg_payload::<libc::tpacket_auxdata>(&msg, c) } {
                         // The length on the wire: a filter's snap length trims the frame before
                         // `recvmsg` sees it, so MSG_TRUNC alone would report the trimmed size.
                         wire_len = Some(aux.tp_len as usize);
                         if aux.tp_status & libc::TP_STATUS_VLAN_VALID != 0 {
+                            // Kernels before 4.x do not report the TPID: assume 802.1Q.
                             let tpid = if aux.tp_status & libc::TP_STATUS_VLAN_TPID_VALID != 0
                                 && aux.tp_vlan_tpid != 0
                             {
@@ -456,13 +503,15 @@ impl Inner {
                             };
                             vlan_tag = Some((tpid, aux.tp_vlan_tci));
                         }
-                    } else if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_TIMESTAMPING
-                    {
-                        let ts: [libc::timespec; 3] = data.cast::<[libc::timespec; 3]>().read_unaligned();
+                    }
+                } else if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
+                    // SAFETY: as above.
+                    if let Some(ts) = unsafe { cmsg_payload::<[libc::timespec; 3]>(&msg, c) } {
                         timestamp = pick_timestamp(&ts);
                     }
-                    c = libc::CMSG_NXTHDR(&raw const msg, c);
                 }
+                // SAFETY: `c` is a header inside `msg`'s control buffer.
+                c = unsafe { libc::CMSG_NXTHDR(&raw const msg, c) };
             }
             let original_len = wire_len.unwrap_or(n as usize).max(captured);
             if self.timestamping == Timestamping::Off {
@@ -598,8 +647,15 @@ impl Inner {
         Ok(self.stats)
     }
 
-    pub(crate) fn tx_errors(&mut self) -> io::Result<u64> {
-        let mut count = 0;
+    pub(crate) fn tx_errors(&mut self) -> io::Result<TxErrors> {
+        self.drain_error_queue()?;
+        Ok(std::mem::take(&mut self.tx_pending))
+    }
+
+    /// Read every report waiting on the error queue, counting launch-time drops into
+    /// `tx_pending`. Returns how many reports were read.
+    fn drain_error_queue(&mut self) -> io::Result<u64> {
+        let mut read = 0;
         loop {
             let mut data = [0u8; 256];
             let mut ctrl = [0u64; 32];
@@ -617,12 +673,30 @@ impl Inner {
             if n < 0 {
                 let e = io::Error::last_os_error();
                 return match e.kind() {
-                    io::ErrorKind::WouldBlock => Ok(count),
+                    io::ErrorKind::WouldBlock => Ok(read),
                     io::ErrorKind::Interrupted => continue,
                     _ => Err(io::Error::new(e.kind(), format!("error queue: {e}"))),
                 };
             }
-            count += 1;
+            read += 1;
+            if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+                continue;
+            }
+            // SAFETY: the kernel filled `ctrl` and set `msg_controllen`.
+            let mut c = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
+            while !c.is_null() {
+                // SAFETY: `c` is a header inside `msg`'s control buffer.
+                let (level, kind) = unsafe { ((*c).cmsg_level, (*c).cmsg_type) };
+                if level == libc::SOL_PACKET
+                    && kind == PACKET_TX_TIMESTAMP
+                    // SAFETY: as above.
+                    && let Some(ee) = unsafe { cmsg_payload::<libc::sock_extended_err>(&msg, c) }
+                {
+                    count_tx_error(&mut self.tx_pending, ee.ee_origin, ee.ee_code);
+                }
+                // SAFETY: as above.
+                c = unsafe { libc::CMSG_NXTHDR(&raw const msg, c) };
+            }
         }
     }
 
@@ -635,7 +709,9 @@ impl Inner {
 
 /// Prefer the raw hardware stamp (`[2]`), else the software one (`[0]`).
 fn pick_timestamp(ts: &[libc::timespec; 3]) -> Option<Timestamp> {
-    let mk = |t: &libc::timespec, source| Timestamp { secs: t.tv_sec, nanos: t.tv_nsec as u32, source };
+    #[allow(clippy::useless_conversion)] // `time_t` is 32-bit on some targets
+    let mk =
+        |t: &libc::timespec, source| Timestamp { secs: i64::from(t.tv_sec), nanos: t.tv_nsec as u32, source };
     if ts[2].tv_sec != 0 || ts[2].tv_nsec != 0 {
         Some(mk(&ts[2], TimestampSource::Hardware))
     } else if ts[0].tv_sec != 0 || ts[0].tv_nsec != 0 {
@@ -689,18 +765,69 @@ fn hardware_address(fd: &OwnedFd, name: &str) -> io::Result<MacAddr> {
     Ok(MacAddr(mac))
 }
 
-fn enable_hardware_timestamps(fd: &OwnedFd, name: &str) -> io::Result<()> {
-    let mut cfg =
-        libc::hwtstamp_config { flags: 0, tx_type: HWTSTAMP_TX_OFF, rx_filter: HWTSTAMP_FILTER_ALL };
+/// Make the NIC stamp received frames without disturbing anyone else, and say whether its
+/// stamps can be asked for. See [`hwtstamp`]: read first, never lower, never write blind.
+fn hardware_timestamps(fd: &OwnedFd, name: &str) -> bool {
+    let current = hwtstamp_ioctl(fd, name, libc::SIOCGHWTSTAMP, None).ok();
+    match hwtstamp::decide(current) {
+        Plan::Software => false,
+        Plan::Hardware => true,
+        Plan::Widen(want) => hwtstamp_ioctl(fd, name, libc::SIOCSHWTSTAMP, Some(want))
+            .is_ok_and(|now| now.rx_filter != hwtstamp::FILTER_NONE),
+    }
+}
+
+/// `SIOCGHWTSTAMP` (`set` = None) or `SIOCSHWTSTAMP`; returns the configuration the driver reports.
+fn hwtstamp_ioctl(
+    fd: &OwnedFd,
+    name: &str,
+    request: libc::c_ulong,
+    set: Option<hwtstamp::Current>,
+) -> io::Result<hwtstamp::Current> {
+    let c = set.unwrap_or(hwtstamp::Current { flags: 0, tx_type: 0, rx_filter: 0 });
+    let mut cfg = libc::hwtstamp_config { flags: c.flags, tx_type: c.tx_type, rx_filter: c.rx_filter };
     // SAFETY: all-zero is a valid `ifreq`.
     let mut ifr: libc::ifreq = unsafe { zeroed() };
     ifr.ifr_name = ifr_name(name)?;
     ifr.ifr_ifru.ifru_data = (&raw mut cfg).cast();
-    // SAFETY: SIOCSHWTSTAMP reads and writes `cfg` through `ifru_data`; both live for the call.
-    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::SIOCSHWTSTAMP, &raw mut ifr) } < 0 {
-        return Err(last_error("SIOCSHWTSTAMP"));
+    // SAFETY: SIOC[GS]HWTSTAMP read and write `cfg` through `ifru_data`; both live for the call.
+    if unsafe { libc::ioctl(fd.as_raw_fd(), request as _, &raw mut ifr) } < 0 {
+        return Err(last_error("hardware timestamp configuration"));
     }
-    Ok(())
+    Ok(hwtstamp::Current { flags: cfg.flags, tx_type: cfg.tx_type, rx_filter: cfg.rx_filter })
+}
+
+/// Count one error-queue report: launch-time drops by reason; anything else is not ours.
+fn count_tx_error(t: &mut TxErrors, origin: u8, code: u8) {
+    if origin == SO_EE_ORIGIN_TXTIME {
+        match code {
+            SO_EE_CODE_TXTIME_MISSED => t.missed += 1,
+            SO_EE_CODE_TXTIME_INVALID_PARAM => t.invalid += 1,
+            _ => {}
+        }
+    }
+}
+
+/// The payload of control message `c` as a `T`, if the message holds a whole one inside `msg`'s
+/// control buffer.
+///
+/// # Safety
+///
+/// `c` must be a header that `CMSG_FIRSTHDR`/`CMSG_NXTHDR` returned for `msg`.
+#[allow(clippy::unnecessary_cast)] // `cmsg_len` and `msg_controllen` are `u32` on musl
+unsafe fn cmsg_payload<T>(msg: &libc::msghdr, c: *const libc::cmsghdr) -> Option<T> {
+    // SAFETY: pure size computation.
+    let need = unsafe { libc::CMSG_LEN(size_of::<T>() as u32) } as usize;
+    // SAFETY: the caller guarantees `c` is a header inside the control buffer.
+    let (len, data) = unsafe { ((*c).cmsg_len as usize, libc::CMSG_DATA(c)) };
+    let end = (data as usize).checked_add(size_of::<T>())?;
+    let limit = (msg.msg_control as usize).checked_add(msg.msg_controllen as usize)?;
+    if len < need || end > limit {
+        return None;
+    }
+    // SAFETY: `size_of::<T>()` octets from `data` lie inside the control buffer (checked) and
+    // inside this message (`cmsg_len`); the payload may be unaligned.
+    Some(unsafe { data.cast::<T>().read_unaligned() })
 }
 
 fn setup_ring(fd: &OwnedFd, r: RingConfig, hardware: bool) -> io::Result<Ring> {
@@ -714,6 +841,10 @@ fn setup_ring(fd: &OwnedFd, r: RingConfig, hardware: bool) -> io::Result<Ring> {
         ));
     }
     let frame_size = (r.frame_size + 15) & !15;
+    let geometry =
+        || io::Error::new(io::ErrorKind::InvalidInput, format!("ring geometry {r:?} is too large"));
+    let frames = (r.block_size / frame_size).checked_mul(r.block_count).ok_or_else(geometry)?;
+    let len = block_size.checked_mul(r.block_count as usize).ok_or_else(geometry)?;
     setopt(fd, libc::SOL_PACKET, libc::PACKET_VERSION, &TPACKET_V3, "PACKET_VERSION")?;
     setopt(fd, libc::SOL_PACKET, libc::PACKET_RESERVE, &RESERVE, "PACKET_RESERVE")?;
     if hardware {
@@ -729,13 +860,12 @@ fn setup_ring(fd: &OwnedFd, r: RingConfig, hardware: bool) -> io::Result<Ring> {
         tp_block_size: r.block_size,
         tp_block_nr: r.block_count,
         tp_frame_size: frame_size,
-        tp_frame_nr: (r.block_size / frame_size) * r.block_count,
+        tp_frame_nr: frames,
         tp_retire_blk_tov: r.retire_ms,
         tp_sizeof_priv: 0,
         tp_feature_req_word: 0,
     };
     setopt(fd, libc::SOL_PACKET, libc::PACKET_RX_RING, &req, "PACKET_RX_RING")?;
-    let len = block_size * r.block_count as usize;
     let map = |flags| {
         // SAFETY: mapping the ring the kernel just allocated for this socket; the result is
         // checked against MAP_FAILED below.
@@ -783,9 +913,9 @@ pub(crate) fn clock_now(clock: Clock) -> io::Result<Duration> {
     Ok(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
 
-/// Clear the effective, permitted and inheritable capability sets of the calling thread (threads
-/// it spawns later inherit them). Sockets already open keep working: the kernel checks
-/// `CAP_NET_RAW` only at `socket(2)`.
+/// Give up every capability, for good: the ambient set, the bounding set where the process
+/// may, and the calling thread's sets, then `no_new_privs`. Fails if another thread still holds
+/// a capability (capabilities are per thread), or if that cannot be checked.
 pub(crate) fn drop_capabilities() -> io::Result<()> {
     #[repr(C)]
     struct Header {
@@ -800,16 +930,129 @@ pub(crate) fn drop_capabilities() -> io::Result<()> {
         inheritable: u32,
     }
     const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+    // The ambient set first: an ambient capability survives `exec`. Kernels before 4.3 have
+    // none and answer EINVAL.
+    // SAFETY: PR_CAP_AMBIENT takes integer arguments only.
+    let _ = unsafe { libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) };
+    // The bounding set limits what any later `exec` can gain. Dropping needs CAP_SETPCAP; a
+    // binary granted only CAP_NET_RAW gets EPERM, which is expected.
+    let last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
+        .ok()
+        .and_then(|s| s.trim().parse::<libc::c_int>().ok())
+        .unwrap_or(63);
+    for cap in 0..=last {
+        // SAFETY: PR_CAPBSET_DROP takes integer arguments only.
+        let _ = unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) };
+    }
+
     let mut header = Header { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
     let data = [Data { effective: 0, permitted: 0, inheritable: 0 }; 2];
     // SAFETY: capset(2) reads one header and two data words (version 3); both are live, and
     // `pid: 0` means the calling thread.
-    let r = unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) };
-    if r < 0 {
+    if unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) } < 0 {
         return Err(last_error("capset"));
     }
     // No later exec may gain privileges either (set-uid or file capabilities).
     // SAFETY: PR_SET_NO_NEW_PRIVS takes integer arguments only.
-    let _ = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    Ok(())
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } < 0 {
+        return Err(last_error("PR_SET_NO_NEW_PRIVS"));
+    }
+    match privileged_threads() {
+        Ok(0) => Ok(()),
+        Ok(n) => Err(io::Error::other(format!(
+            "{n} other thread(s) still hold capabilities: call drop_capabilities after opening the \
+             sockets and before spawning threads or building a multi-threaded runtime"
+        ))),
+        Err(e) => Err(io::Error::new(e.kind(), format!("cannot check the other threads' capabilities: {e}"))),
+    }
+}
+
+/// How many other threads of this process hold a capability.
+fn privileged_threads() -> io::Result<usize> {
+    // SAFETY: gettid takes no arguments.
+    let me = unsafe { libc::syscall(libc::SYS_gettid) }.to_string();
+    let mut n = 0;
+    for entry in std::fs::read_dir("/proc/self/task")? {
+        let entry = entry?;
+        if entry.file_name().to_str() == Some(me.as_str()) {
+            continue;
+        }
+        match std::fs::read_to_string(entry.path().join("status")) {
+            Ok(status) if holds_capabilities(&status) => n += 1,
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {} // the thread just ended
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// Whether a `/proc/<pid>/task/<tid>/status` text shows any inheritable, permitted, effective
+/// or ambient capability. A set that cannot be read counts as held.
+fn holds_capabilities(status: &str) -> bool {
+    let sets = ["CapInh", "CapPrm", "CapEff", "CapAmb"];
+    let mut seen = 0;
+    for (key, value) in status.lines().filter_map(|l| l.split_once(':')) {
+        if sets.contains(&key) {
+            seen += 1;
+            if u64::from_str_radix(value.trim(), 16) != Ok(0) {
+                return true;
+            }
+        }
+    }
+    seen < 3 // CapAmb is missing before Linux 4.3; the other three always exist
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 003 SR-002: the status parser sees every set, and an unreadable set counts as held.
+    #[test]
+    fn a_thread_status_shows_whether_it_holds_capabilities() {
+        let none = "Name:\tx\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n";
+        assert!(!holds_capabilities(none));
+        assert!(holds_capabilities(&none.replace("CapPrm:\t0000000000000000", "CapPrm:\t0000000000002000")));
+        assert!(holds_capabilities(&none.replace("CapAmb:\t0000000000000000", "CapAmb:\t0000000000001000")));
+        assert!(holds_capabilities(&none.replace("CapEff:\t0000000000000000", "CapEff:\tzz")));
+        assert!(holds_capabilities("Name:\tx\n"), "no sets at all");
+        assert!(!holds_capabilities(&none.replace("CapAmb:\t0000000000000000\n", "")), "old kernel");
+    }
+
+    /// Spec 003 SR-011: only launch-time reports count, by reason.
+    #[test]
+    fn only_launch_time_reports_are_counted() {
+        let mut t = TxErrors::default();
+        count_tx_error(&mut t, SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_MISSED);
+        count_tx_error(&mut t, SO_EE_ORIGIN_TXTIME, SO_EE_CODE_TXTIME_INVALID_PARAM);
+        count_tx_error(&mut t, libc::SO_EE_ORIGIN_LOCAL, SO_EE_CODE_TXTIME_MISSED);
+        count_tx_error(&mut t, libc::SO_EE_ORIGIN_TXSTATUS, 0);
+        assert_eq!((t.missed, t.invalid, t.total()), (1, 1, 2));
+    }
+
+    /// Spec 003 SR-005: a control message shorter than its payload type is skipped.
+    #[test]
+    fn a_short_control_message_is_skipped() {
+        let mut ctrl = [0u64; 16];
+        // SAFETY: all-zero is a valid `msghdr`.
+        let mut msg: libc::msghdr = unsafe { zeroed() };
+        msg.msg_control = ctrl.as_mut_ptr().cast();
+        msg.msg_controllen = size_of::<[u64; 16]>() as _;
+        // SAFETY: the buffer holds at least one header.
+        let c = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
+        assert!(!c.is_null());
+        // SAFETY: `c` points at the start of `ctrl`, which is large enough for a header.
+        unsafe {
+            (*c).cmsg_level = libc::SOL_SOCKET;
+            (*c).cmsg_type = libc::SCM_TIMESTAMPING;
+            (*c).cmsg_len = libc::CMSG_LEN(4) as _;
+        }
+        // SAFETY: `c` came from CMSG_FIRSTHDR for `msg`.
+        assert!(unsafe { cmsg_payload::<[libc::timespec; 3]>(&msg, c) }.is_none());
+        // SAFETY: as above.
+        unsafe { (*c).cmsg_len = libc::CMSG_LEN(size_of::<[libc::timespec; 3]>() as u32) as _ };
+        // SAFETY: as above.
+        assert!(unsafe { cmsg_payload::<[libc::timespec; 3]>(&msg, c) }.is_some());
+    }
 }

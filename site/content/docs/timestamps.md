@@ -48,15 +48,15 @@ Linux turns on receive timestamping lazily, so the first frames after a socket o
 
 ## Hardware timestamps on Linux
 
-`Timestamping::Hardware` makes rawether configure the NIC (`SIOCSHWTSTAMP`, all received frames) when the socket opens, and ask the kernel for raw hardware stamps. Two things decide whether you get them:
+A NIC's timestamping configuration is device-wide: `ptp4l` and other programs rely on it. So with `Timestamping::Hardware`, rawether reads it first and **never lowers it**:
 
-- **The NIC and driver must support it.** `ethtool -T eth0` lists `hardware-receive` and `hardware-raw-clock` if they do.
-- **The process needs `CAP_NET_ADMIN`** to configure the NIC.
+| The NIC currently | rawether |
+|---|---|
+| Stamps received frames (all, or PTP only, as `ptp4l` sets it) | Leaves it alone and asks for its stamps. No `CAP_NET_ADMIN` needed |
+| Stamps nothing | Widens the receive filter to all frames, keeping transmit stamping as it is. Needs `CAP_NET_ADMIN` |
+| Has no hardware stamping, or its configuration cannot be read | Writes nothing; frames get `Software` stamps |
 
-If either is missing, the socket still opens and frames get `Software` stamps. Check `t.source` on the first frames if you need hardware precision.
-
-> [!WARNING]
-> The NIC's timestamping configuration is device-wide, not per socket. rawether sets it to "stamp every received frame, no transmit stamps", and does not restore it on close. On a host where `ptp4l` uses the same NIC, that switches off the transmit stamps `ptp4l` needs. Use `Timestamping::Hardware` only on NICs that no other time-sync program is using.
+`sock.timestamping()` tells you what the socket delivers, and each frame's `t.source` says what it got. With a PTP-only filter, PTP frames are stamped `Hardware` and the others `Software`. `ethtool -T eth0` lists what a NIC supports.
 
 ## macOS and FreeBSD
 

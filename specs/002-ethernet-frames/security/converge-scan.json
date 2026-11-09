@@ -369,7 +369,7 @@
       ]
     },
     "enforcement": "warn",
-    "config_file": "/Users/hupe/Workspaces/hupe1980/rawether/.specify/extensions/threatspec/threatspec-config.yml"
+    "config_file": ".specify/extensions/threatspec/threatspec-config.yml"
   },
   "verdict_schema": {
     "requirement": "SR-###",

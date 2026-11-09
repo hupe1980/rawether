@@ -106,13 +106,15 @@ impl Program {
         for (pc, i) in insns.iter().enumerate() {
             let class = i.code & 0x07;
             if class == op::JMP {
+                // Checked: on a 32-bit target `next + k` can wrap for a large `k`.
                 let next = pc + 1;
-                let targets: &[usize] = if i.code & 0xf0 == op::JA {
-                    &[next + i.k as usize]
+                let target = |off: usize| next.checked_add(off).filter(|&t| t < insns.len());
+                let ok = if i.code & 0xf0 == op::JA {
+                    target(i.k as usize).is_some()
                 } else {
-                    &[next + i.jt as usize, next + i.jf as usize]
+                    target(usize::from(i.jt)).is_some() && target(usize::from(i.jf)).is_some()
                 };
-                if targets.iter().any(|&t| t >= insns.len()) {
+                if !ok {
                     return Err(invalid(format!("instruction {pc} jumps past the end")));
                 }
             }
@@ -251,7 +253,8 @@ impl Program {
                 op::JMP => {
                     let taken = match i.code & 0xf0 {
                         op::JA => {
-                            pc += i.k as usize;
+                            let Some(to) = pc.checked_add(i.k as usize) else { return 0 };
+                            pc = to;
                             continue;
                         }
                         op::JEQ => a == src,
@@ -397,6 +400,13 @@ mod tests {
         let p = Program::ethertypes(&[0x88cc]).expect("program");
         assert_eq!(p.run(&[0u8; 13]), 0);
         assert_eq!(p.run(&[]), 0);
+    }
+
+    /// Spec 003 SR-008: a jump as far as `u32::MAX` is refused, never wrapped.
+    #[test]
+    fn a_far_jump_is_refused_on_every_pointer_width() {
+        let far = vec![Insn::new(op::JMP | op::JA, 0, 0, u32::MAX), Insn::new(op::RET | op::K, 0, 0, 1)];
+        assert!(Program::new(far).is_err());
     }
 
     /// Threat model T-04 (SR-004).

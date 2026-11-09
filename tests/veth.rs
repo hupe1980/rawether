@@ -221,6 +221,11 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
         .status()
         .is_ok_and(|s| s.success());
     if !ok {
+        // CI's kernel has sch_etf and sets RAWETHER_REQUIRE_ETF, so the half cannot skip there.
+        assert!(
+            std::env::var_os("RAWETHER_REQUIRE_ETF").is_none(),
+            "no etf qdisc, but RAWETHER_REQUIRE_ETF is set"
+        );
         eprintln!("skipping the launch-time half: no etf qdisc");
         return;
     }
@@ -245,7 +250,9 @@ fn launch_time_needs_configuration_and_a_qdisc_that_honours_it() {
     // A launch time in the past is dropped by etf and reported on the error queue.
     timed.send_at(&f, now.checked_sub(Duration::from_secs(1)).unwrap().as_nanos() as u64).unwrap();
     std::thread::sleep(Duration::from_millis(50));
-    assert!(timed.tx_errors().unwrap() >= 1);
+    // Spec 003 SR-011: counted as a missed deadline, nothing else.
+    let errors = timed.tx_errors().unwrap();
+    assert!(errors.missed >= 1, "{errors:?}");
     let _ = std::process::Command::new("tc").args(["qdisc", "del", "dev", &iface, "root"]).status();
 }
 
@@ -295,43 +302,119 @@ fn the_steady_state_does_not_allocate() {
     }
 }
 
-/// Threat model T-05 (SR-005).
-///
-/// Dropping capabilities keeps the open socket and refuses a new one. Runs in a child process,
-/// because capabilities cannot be regained.
+/// A private veth pair for tests that take links down or delete them; removed on drop.
+struct Pair(String, String);
+
+impl Pair {
+    fn new(tag: &str) -> Option<Pair> {
+        let (a, b) = (format!("rwt{tag}0"), format!("rwt{tag}1"));
+        let ip =
+            |args: &[&str]| std::process::Command::new("ip").args(args).status().is_ok_and(|s| s.success());
+        let _ = ip(&["link", "del", &a]);
+        (ip(&["link", "add", &a, "type", "veth", "peer", "name", &b])
+            && ip(&["link", "set", &a, "up"])
+            && ip(&["link", "set", &b, "up"]))
+        .then_some(Pair(a, b))
+    }
+
+    fn up(&self) {
+        let s = std::process::Command::new("ip").args(["link", "set", &self.1, "up"]).status().unwrap();
+        assert!(s.success());
+    }
+}
+
+impl Drop for Pair {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("ip").args(["link", "del", &self.0]).status();
+    }
+}
+
+/// Spec 003 SR-004 (threat model T-15): a link going down ends a waiting receive with an error
+/// instead of spinning; frames flow again once it is back up.
 #[test]
-fn dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening() {
-    let Some((iface, peer)) = pair() else { return };
-    if std::env::var("RAWETHER_DROP_CHILD").is_err() {
-        let exe = std::env::current_exe().unwrap();
-        let out = std::process::Command::new(exe)
-            .args([
-                "--exact",
-                "dropping_capabilities_keeps_open_sockets_and_names_the_capability_when_opening",
-                "--test-threads=1",
-            ])
-            .env("RAWETHER_DROP_CHILD", "1")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return;
-    }
-    let mut r = rx(&peer, &[TYPE_A]);
-    let t = tx(&iface);
-    rawether::drop_capabilities().unwrap();
-    let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-    for field in ["CapEff:", "CapPrm:"] {
-        let line = status.lines().find(|l| l.starts_with(field)).unwrap();
-        assert!(line.ends_with("0000000000000000"), "{line}");
-    }
-    t.send(&frame(r.mac_address(), t.mac_address(), TYPE_A, None, 7)).unwrap();
-    assert!(r.recv(Some(Duration::from_secs(2))).unwrap().is_some(), "the open socket still works");
-    let e = Socket::open(&Config::new(&peer)).unwrap_err();
-    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(e.to_string().contains("CAP_NET_RAW"), "{e}");
+fn a_link_going_down_ends_a_receive_and_frames_return_after_it_comes_up() {
+    let Some(_) = pair() else { return };
+    let p = Pair::new("d").expect("a private veth pair (the main pair exists, so ip link works)");
+    let t = tx(&p.0);
+    let mut r = rx(&p.1, &[TYPE_A]);
+    let f = frame(MacAddr::BROADCAST, t.mac_address(), TYPE_A, None, 1);
+    let flip = {
+        let name = p.1.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            std::process::Command::new("ip").args(["link", "set", &name, "down"]).status().unwrap();
+        })
+    };
+    let start = Instant::now();
+    let e = r.recv(Some(Duration::from_secs(5))).expect_err("the link went down");
+    let took = start.elapsed();
+    flip.join().unwrap();
+    assert!(took < Duration::from_secs(1), "returned after {took:?}: {e}");
+    assert!(e.to_string().contains(&p.1), "names the interface: {e}");
+    p.up();
+    std::thread::sleep(Duration::from_millis(100));
+    t.send(&f).unwrap();
+    assert!(r.recv(Some(Duration::from_secs(2))).unwrap().is_some(), "frames flow again");
+}
+
+/// Spec 003 SR-004: deleting the interface ends a waiting receive with an error, and later
+/// receives wait out their timeout instead of spinning.
+#[test]
+fn deleting_the_interface_ends_a_receive() {
+    let Some(_) = pair() else { return };
+    let p = Pair::new("x").expect("a private veth pair (the main pair exists, so ip link works)");
+    let mut r = rx(&p.1, &[TYPE_A]);
+    let name = p.0.clone();
+    let del = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        std::process::Command::new("ip").args(["link", "del", &name]).status().unwrap();
+    });
+    let start = Instant::now();
+    assert!(r.recv(Some(Duration::from_secs(5))).is_err(), "the interface went away");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    del.join().unwrap();
+    let start = Instant::now();
+    let later = r.recv(Some(Duration::from_millis(200)));
+    assert!(later.is_err() || start.elapsed() >= Duration::from_millis(190), "{later:?}");
+}
+
+/// Spec 003 SR-008, SR-009: no timeout overflows, and an explicit ring the kernel refuses is an
+/// error, not a quiet fallback.
+#[test]
+fn a_huge_timeout_waits_and_an_impossible_ring_is_refused() {
+    let Some((_, peer)) = pair() else { return };
+    let mut r = Config::new(&peer).ethertypes(&[0x88b7]).nonblocking(true).open().unwrap();
+    assert!(r.recv(Some(Duration::MAX)).unwrap().is_none());
+    let odd = rawether::RingConfig { block_size: 1 << 11, ..rawether::RingConfig::default() };
+    let e = Config::new(&peer).rx_mode(RxMode::Ring(odd)).open().expect_err("not a page multiple");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+}
+
+/// Spec 003 FR-007: veth has no hardware timestamping, so a request for it reports software.
+#[test]
+fn hardware_timestamps_on_a_nic_without_them_report_software() {
+    let Some((_, peer)) = pair() else { return };
+    let r = Config::new(&peer).timestamping(rawether::Timestamping::Hardware).open().unwrap();
+    assert_eq!(r.timestamping(), rawether::Timestamping::Software);
+}
+
+/// Spec 003 FR-016 (Q-06): without a qdisc that honours launch times, the launch time is ignored
+/// and the frame leaves at once.
+#[test]
+fn a_launch_time_without_etf_is_sent_at_once() {
+    let Some(_) = pair() else { return };
+    let p = Pair::new("t").expect("a private veth pair (the main pair exists, so ip link works)");
+    let mut r = rx(&p.1, &[TYPE_A]);
+    let timed = Config::new(&p.0)
+        .ethertypes(&[0xffff])
+        .rx_mode(RxMode::Plain)
+        .tx_time(rawether::TxTime::default())
+        .open()
+        .unwrap();
+    let f = frame(MacAddr::BROADCAST, timed.mac_address(), TYPE_A, None, 1);
+    let launch = rawether::clock_now(rawether::Clock::Tai).unwrap() + Duration::from_millis(300);
+    let start = Instant::now();
+    timed.send_at(&f, launch.as_nanos() as u64).unwrap();
+    assert!(r.recv(Some(Duration::from_secs(2))).unwrap().is_some());
+    assert!(start.elapsed() < Duration::from_millis(100), "held for {:?}", start.elapsed());
 }

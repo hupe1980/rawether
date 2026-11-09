@@ -12,20 +12,25 @@ use std::mem::{size_of, zeroed};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use super::unix::{ifr_name, interface_index, last_error, set_nonblocking, wait_readable};
+use super::deadline;
+use super::unix::{Ready, ifr_name, interface_index, last_error, set_nonblocking, wait};
 use crate::bpf::Program;
+use crate::bpf_record::{self, Layout};
 use crate::config::{Clock, Config, Timestamping};
-use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource};
+use crate::packet::{MacAddr, Packet, RxPath, Stats, Timestamp, TimestampSource, TxErrors};
 
-/// `BPF_ALIGNMENT`: records in a read buffer start on this boundary.
-#[cfg(target_os = "macos")]
-const ALIGN: usize = 4;
-#[cfg(not(target_os = "macos"))]
-const ALIGN: usize = size_of::<libc::c_long>();
-
-const fn word_align(x: usize) -> usize {
-    (x + (ALIGN - 1)) & !(ALIGN - 1)
-}
+/// `BIOCSDIRECTION` (`_IOW('B', 119, u_int)`) and `BPF_D_IN` (FreeBSD `<net/bpf.h>`): see only
+/// incoming frames. Not exported by `libc`; FreeBSD's `BIOCSSEESENT` is an alias of it.
+/// `SIOCADDMULTI` = `_IOW('i', 49, struct ifreq)` (`<sys/sockio.h>`), the same on macOS and
+/// FreeBSD; not exported by `libc` for either.
+const SIOCADDMULTI: libc::c_ulong = 0x8000_0000
+    | (((size_of::<libc::ifreq>() as libc::c_ulong) & 0x1fff) << 16)
+    | ((b'i' as libc::c_ulong) << 8)
+    | 0x31; // command 49
+#[cfg(target_os = "freebsd")]
+const BIOCSDIRECTION: libc::c_ulong = 0x8004_4277;
+#[cfg(target_os = "freebsd")]
+const BPF_D_IN: libc::c_uint = 0;
 
 /// `struct bpf_stat`.
 #[repr(C)]
@@ -57,6 +62,8 @@ pub(crate) struct Inner {
     /// The unread part of the last read: `buf[pos..end]`.
     pos: usize,
     end: usize,
+    /// Frames handed out since the socket opened: `Stats::received`.
+    delivered: u64,
     /// A datagram socket kept for multicast membership, which BSD holds per socket.
     _membership: Option<OwnedFd>,
 }
@@ -88,6 +95,10 @@ impl Inner {
         #[cfg(target_os = "macos")]
         if !cfg.see_outgoing {
             ioctl_int(&fd, libc::BIOCSSEESENT as _, 0, "BIOCSSEESENT")?;
+        }
+        #[cfg(target_os = "freebsd")]
+        if !cfg.see_outgoing {
+            ioctl_int(&fd, BIOCSDIRECTION, BPF_D_IN, "BIOCSDIRECTION")?;
         }
         if let Some(p) = program {
             let mut insns: Vec<libc::bpf_insn> = p
@@ -129,6 +140,7 @@ impl Inner {
             buf: vec![0u8; blen as usize],
             pos: 0,
             end: 0,
+            delivered: 0,
             _membership: membership,
         })
     }
@@ -153,15 +165,25 @@ impl Inner {
         self.fd.as_fd()
     }
 
+    pub(crate) fn timestamping(&self) -> Timestamping {
+        // BPF stamps in software; a request for hardware stamps gets those.
+        if self.timestamping == Timestamping::Off { Timestamping::Off } else { Timestamping::Software }
+    }
+
     pub(crate) fn recv(&mut self, timeout: Option<Duration>) -> io::Result<Option<Packet<'_>>> {
         let timeout = if self.nonblocking { Some(Duration::ZERO) } else { timeout };
-        let deadline = timeout.map(|t| Instant::now() + t);
+        let deadline = deadline(timeout);
         loop {
-            if let Some((start, caplen, datalen, ts)) = next_record(&self.buf[..self.end], &mut self.pos) {
-                let timestamp = (self.timestamping != Timestamping::Off).then_some(ts);
+            if let Some(r) = bpf_record::next(&self.buf[..self.end], &mut self.pos, Layout::native()) {
+                self.delivered += 1;
+                let timestamp = (self.timestamping != Timestamping::Off).then(|| Timestamp {
+                    secs: r.secs,
+                    nanos: (r.usecs.clamp(0, 999_999) as u32) * 1000,
+                    source: TimestampSource::Software,
+                });
                 return Ok(Some(Packet {
-                    data: &self.buf[start..start + caplen],
-                    original_len: datalen,
+                    data: &self.buf[r.start..r.start + r.caplen],
+                    original_len: r.datalen,
                     timestamp,
                     vlan_restored: false,
                 }));
@@ -169,7 +191,8 @@ impl Inner {
             self.pos = 0;
             self.end = 0;
             let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
-            if remaining.is_some() && !wait_readable(self.fd.as_fd(), remaining)? {
+            // On `Ready::Error` the read below returns the device's error.
+            if wait(self.fd.as_fd(), remaining)? == Ready::Timeout {
                 return Ok(None);
             }
             // SAFETY: reads at most `buf.len()` octets into `buf`, as BPF requires.
@@ -177,9 +200,8 @@ impl Inner {
             if n < 0 {
                 let e = io::Error::last_os_error();
                 match e.kind() {
-                    io::ErrorKind::WouldBlock if remaining == Some(Duration::ZERO) => return Ok(None),
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => continue,
-                    _ => return Err(io::Error::new(e.kind(), format!("read from BPF: {e}"))),
+                    _ => return Err(io::Error::new(e.kind(), format!("interface {}: {e}", self.name))),
                 }
             }
             self.end = n as usize;
@@ -220,13 +242,13 @@ impl Inner {
         if unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::BIOCGSTATS as _, &raw mut st) } < 0 {
             return Err(last_error("BIOCGSTATS"));
         }
-        // BPF's counters are cumulative; `bs_recv` includes the drops.
-        let dropped = u64::from(st.drop);
-        Ok(Stats { received: u64::from(st.recv).saturating_sub(dropped), dropped })
+        // `bs_recv` counts frames before the filter runs, so `received` is what rawether read;
+        // `bs_drop` counts frames that passed the filter and found the buffer full.
+        Ok(Stats { received: self.delivered, dropped: u64::from(st.drop) })
     }
 
-    pub(crate) fn tx_errors(&mut self) -> io::Result<u64> {
-        Ok(0)
+    pub(crate) fn tx_errors(&mut self) -> io::Result<TxErrors> {
+        Ok(TxErrors::default())
     }
 
     pub(crate) fn set_nonblocking(&mut self, on: bool) -> io::Result<()> {
@@ -234,31 +256,6 @@ impl Inner {
         self.nonblocking = on;
         Ok(())
     }
-}
-
-/// The next record in `buf` at `*pos`, as `(data start, captured, wire length, timestamp)`,
-/// advancing `*pos`. `None` at the end or when the kernel's lengths do not hold together.
-fn next_record(buf: &[u8], pos: &mut usize) -> Option<(usize, usize, usize, Timestamp)> {
-    let at = *pos;
-    if at.checked_add(size_of::<libc::bpf_hdr>())? > buf.len() {
-        return None;
-    }
-    // SAFETY: `size_of::<bpf_hdr>()` octets from `at` lie inside `buf` (checked above); the
-    // record may be unaligned, so it is read unaligned into a value of its own type.
-    let h: libc::bpf_hdr = unsafe { buf.as_ptr().add(at).cast::<libc::bpf_hdr>().read_unaligned() };
-    let start = at.checked_add(usize::from(h.bh_hdrlen))?;
-    let caplen = h.bh_caplen as usize;
-    if usize::from(h.bh_hdrlen) < size_of::<libc::bpf_hdr>() - 2 || start.checked_add(caplen)? > buf.len() {
-        *pos = buf.len();
-        return None;
-    }
-    *pos = word_align(start + caplen);
-    let ts = Timestamp {
-        secs: i64::from(h.bh_tstamp.tv_sec),
-        nanos: (h.bh_tstamp.tv_usec as u32).saturating_mul(1000).min(999_999_999),
-        source: TimestampSource::Software,
-    };
-    Some((start, caplen, h.bh_datalen as usize, ts))
 }
 
 fn open_device() -> io::Result<OwnedFd> {
@@ -315,18 +312,23 @@ fn hardware_address(name: &str) -> io::Result<MacAddr> {
             // SAFETY: `ifa_addr` is non-null and points at a sockaddr owned by the list.
             let family = i32::from(unsafe { (*ifa.ifa_addr).sa_family });
             if family == libc::AF_LINK {
-                // SAFETY: an AF_LINK address is a `sockaddr_dl`; its link-level address starts
-                // after the name (`sdl_nlen` octets into `sdl_data`), and `sdl_alen` says how
-                // long it is. The read is bounded by `sdl_len`, the record's own length.
-                let dl = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_dl>() };
-                if dl.sdl_alen == 6 && usize::from(dl.sdl_nlen) + 6 + 8 <= usize::from(dl.sdl_len) {
+                // An AF_LINK address is a `sockaddr_dl`: the link-level address follows the name
+                // (`sdl_nlen` octets into `sdl_data`), `sdl_alen` octets long, inside the record's
+                // own `sdl_len`. Read it through the raw pointer to the whole record, never through
+                // a reference to the fixed-size struct, which a long name would overrun.
+                let base = ifa.ifa_addr.cast::<u8>().cast_const();
+                // SAFETY: the record starts with `sdl_len`, `sdl_family`, …, `sdl_alen`; these
+                // header fields lie inside every `sockaddr_dl` the kernel returns.
+                let (len, nlen, alen) = unsafe {
+                    let dl = ifa.ifa_addr.cast::<libc::sockaddr_dl>();
+                    (usize::from((*dl).sdl_len), usize::from((*dl).sdl_nlen), (*dl).sdl_alen)
+                };
+                let at = std::mem::offset_of!(libc::sockaddr_dl, sdl_data) + nlen;
+                if alen == 6 && at + 6 <= len {
                     let mut mac = [0u8; 6];
-                    // SAFETY: as above — the six octets lie inside the record.
-                    let p = unsafe { dl.sdl_data.as_ptr().cast::<u8>().add(usize::from(dl.sdl_nlen)) };
-                    for (k, o) in mac.iter_mut().enumerate() {
-                        // SAFETY: k < 6, inside the bound checked above.
-                        *o = unsafe { *p.add(k) };
-                    }
+                    // SAFETY: `[at, at + 6)` lies inside the record (`sdl_len`, checked), and
+                    // `base` carries the provenance of the whole record.
+                    unsafe { std::ptr::copy_nonoverlapping(base.add(at), mac.as_mut_ptr(), 6) };
                     found = Some(MacAddr(mac));
                 }
             }
@@ -361,7 +363,7 @@ fn join_groups(name: &str, groups: &[MacAddr]) -> io::Result<OwnedFd> {
             *o = b as libc::c_char;
         }
         // SAFETY: SIOCADDMULTI reads `ifr`, which is live.
-        if unsafe { libc::ioctl(fd.as_raw_fd(), libc::SIOCADDMULTI as _, &raw mut ifr) } < 0 {
+        if unsafe { libc::ioctl(fd.as_raw_fd(), SIOCADDMULTI as _, &raw mut ifr) } < 0 {
             return Err(last_error(&format!("SIOCADDMULTI {g} on {name}")));
         }
     }
@@ -410,29 +412,11 @@ pub(crate) fn drop_capabilities() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// The ioctl numbers rawether defines itself, against `<sys/sockio.h>` and `<net/bpf.h>`.
     #[test]
-    fn a_read_buffer_is_split_into_records_and_bad_lengths_end_it() {
-        let hl = size_of::<libc::bpf_hdr>();
-        let mut buf = vec![0u8; 256];
-        // SAFETY: test-only; writes one header into a buffer large enough for it.
-        let mut h: libc::bpf_hdr = unsafe { zeroed() };
-        h.bh_caplen = 20;
-        h.bh_datalen = 60;
-        h.bh_hdrlen = hl as u16;
-        h.bh_tstamp.tv_sec = 7;
-        // SAFETY: `buf` holds at least `hl` octets at offset 0.
-        unsafe { buf.as_mut_ptr().cast::<libc::bpf_hdr>().write_unaligned(h) };
-        buf[hl..hl + 20].fill(0xaa);
-        let mut pos = 0;
-        let (start, cap, wire, ts) = next_record(&buf[..word_align(hl + 20)], &mut pos).expect("record");
-        assert_eq!((start, cap, wire, ts.secs), (hl, 20, 60, 7));
-        assert!(next_record(&buf[..word_align(hl + 20)], &mut pos).is_none());
-
-        h.bh_caplen = 10_000;
-        // SAFETY: as above.
-        unsafe { buf.as_mut_ptr().cast::<libc::bpf_hdr>().write_unaligned(h) };
-        let mut pos = 0;
-        assert!(next_record(&buf, &mut pos).is_none(), "a record longer than the buffer");
-        assert_eq!(pos, buf.len());
+    fn locally_defined_ioctls_match_the_headers() {
+        assert_eq!(SIOCADDMULTI, 0x8020_6931);
+        #[cfg(target_os = "freebsd")]
+        assert_eq!(BIOCSDIRECTION, 0x8004_4277);
     }
 }

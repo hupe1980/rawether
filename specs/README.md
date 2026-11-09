@@ -46,14 +46,10 @@ never by the documentation alone.
 
 ## Index
 
-### Shipped in 0.1.0
+### 0.1.0 (first release)
 
 | Record | Change |
 |---|---|
 | [001-raw-l2-crate](001-raw-l2-crate/spec.md) | rawether 0.1.0 — raw layer-2 Ethernet I/O |
-
-### Unreleased
-
-| Record | Change |
-|---|---|
 | [002-ethernet-frames](002-ethernet-frames/spec.md) | Ethernet frame views (`Frame`), frame building (`FrameBuilder`) and replies |
+| [003-audit-remediation](003-audit-remediation/spec.md) | Audit remediation: FreeBSD receive, a process-wide capability drop, hardware timestamps that never lower the NIC's configuration, link-loss errors, checked arithmetic and control messages, Miri, fuzzing and a FreeBSD lane |

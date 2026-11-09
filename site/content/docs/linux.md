@@ -17,7 +17,7 @@ On Linux, a rawether socket is an `AF_PACKET`, `SOCK_RAW` socket bound to one in
 | TPACKET_V3 receive ring | Linux 3.2 |
 | Own transmissions filtered in the kernel (`PACKET_IGNORE_OUTGOING`) | Linux 4.20; older kernels filter by packet type on receive |
 | Launch time (`SO_TXTIME`) | Linux 4.19, and an `etf` or `taprio` qdisc |
-| Hardware timestamps | A NIC that supports them, and `CAP_NET_ADMIN` |
+| Hardware timestamps | A NIC that supports them; `CAP_NET_ADMIN` only if it stamps nothing yet |
 
 ## Kernel facilities by feature
 
@@ -27,13 +27,13 @@ On Linux, a rawether socket is an `AF_PACKET`, `SOCK_RAW` socket bound to one in
 | `RxMode::Ring` | `PACKET_VERSION` = `TPACKET_V3`, `PACKET_RESERVE`, `PACKET_RX_RING`, `mmap` (`MAP_LOCKED` where allowed) |
 | `RxMode::Plain` | `recvmsg` with `PACKET_AUXDATA` and `SCM_TIMESTAMPING` control messages |
 | `join`, `all_multicast`, `promiscuous` | `PACKET_ADD_MEMBERSHIP` with `PACKET_MR_MULTICAST`, `_ALLMULTI`, `_PROMISC` |
-| `Timestamping` | `SO_TIMESTAMPING`; `SIOCSHWTSTAMP` for hardware |
+| `Timestamping` | `SO_TIMESTAMPING`; `SIOCGHWTSTAMP` first, `SIOCSHWTSTAMP` only to widen a NIC that stamps nothing |
 | `priority` | `SO_PRIORITY` |
 | `qdisc_bypass` | `PACKET_QDISC_BYPASS` |
 | `tx_time`, `send_at`, `tx_errors` | `SO_TXTIME`, `SCM_TXTIME`, `MSG_ERRQUEUE` |
 | `send_batch` | `sendmmsg` |
 | `stats` | `PACKET_STATISTICS` |
-| `drop_capabilities` | `capset`, `PR_SET_NO_NEW_PRIVS` |
+| `drop_capabilities` | `PR_CAP_AMBIENT`, `PR_CAPBSET_DROP`, `capset`, `PR_SET_NO_NEW_PRIVS`, then a check of every thread in `/proc/self/task` |
 
 Memberships taken through `PACKET_ADD_MEMBERSHIP` belong to the socket. The kernel counts them per interface and removes them when the last socket that asked closes, so promiscuous mode does not outlive your program.
 

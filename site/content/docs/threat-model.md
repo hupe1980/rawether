@@ -36,13 +36,17 @@ The kernel and its drivers. Even so, rawether does not let inconsistent ring met
 | T-02 | Using a frame after its memory goes back to the kernel | `Packet` borrows the socket; the next receive releases the block. Enforced by the compiler | mitigated |
 | T-03 | Hostile frame shapes: truncated, oversized, crafted tags | VLAN re-insertion, length reporting and the header view `p.frame()` are total. Wire and captured lengths are separate, truncation is flagged, and a frame too short for its header has no view | mitigated |
 | T-04 | Frames the filter should have excluded | Socket created with protocol 0, filter attached, then bound. `Program::new` refuses what the kernel refuses | mitigated |
-| T-05 | The privilege kept while parsing untrusted frames | `drop_capabilities()` clears the capability sets and sets `no_new_privs`. Capabilities are per thread: call it before spawning threads | mitigated (Linux, for the calling thread) |
+| T-05 | The privilege kept while parsing untrusted frames | `drop_capabilities()` clears every capability set, empties the bounding set where it may, sets `no_new_privs`, and refuses while any other thread still holds a capability | mitigated (Linux) |
 | T-06 | The socket inherited by a program you execute | Every descriptor is close-on-exec | mitigated |
 | T-07 | Other hosts' traffic exposed by default | Promiscuous and all-multicast modes are off unless requested | mitigated |
 | T-08 | A flood that fills the ring unnoticed | Bounded ring and buffers; the kernel's drop counter is readable through `stats()` | detected |
 | T-09 | Launch-time frames held or dropped silently | `send_at` refuses without `tx_time`; dropped frames are counted by `tx_errors()` | detected |
 | T-10 | A forged group source address turning a responder into a reply storm | `Frame::reply` refuses to answer a multicast or broadcast source | mitigated |
 | T-11 | Earlier frame bytes leaking into the padding of a frame built in a reused buffer | `FrameBuilder` replaces the buffer's contents and pads with zeros | mitigated |
+| T-12 | The NIC's device-wide timestamp configuration changed under other programs such as `ptp4l` | Read first, never lowered, never written blind | mitigated (Linux) |
+| T-13 | BPF read-buffer records misparsed (macOS and FreeBSD lay them out differently) | Parsed field by field at each platform's offsets, bounded by the buffer | mitigated (macOS, FreeBSD) |
+| T-14 | A control message shorter than what is read from it | Truncated buffers ignored; each message checked to hold its payload | mitigated (Linux) |
+| T-15 | A receive spinning a CPU core when the link goes down or the interface disappears | `recv` returns the socket's error | mitigated |
 
 "Detected" means rawether cannot prevent the loss, but it makes sure you can see it.
 
@@ -56,11 +60,11 @@ The kernel and its drivers. Even so, rawether does not let inconsistent ring met
 ## Deploying safely
 
 1. Grant `CAP_NET_RAW` to the binary (`setcap cap_net_raw+ep`), or add only that capability to a container. Do not run as root or privileged.
-2. Open every socket, then call `drop_capabilities()` before spawning threads or reading the first frame.
+2. Open every socket, then call `drop_capabilities()` before spawning threads, building an async runtime or reading the first frame.
 3. Filter on the EtherTypes you use and leave promiscuous mode off, so the kernel discards everything else.
 4. Treat each frame as untrusted input. Read the header through `p.frame()` rather than indexing, check `is_truncated()`, and use `get(..)` rather than `[..]` when you parse the payload.
 5. Watch `stats().dropped`, and `tx_errors()` with launch times, if a lost frame matters.
-6. Keep `Timestamping::Hardware` off NICs that `ptp4l` or another time-sync program uses: the NIC's timestamp configuration is device-wide.
+6. Fuzz and test your own frame parsers; `Frame::new` and `bpf::Program::run` work on plain byte slices.
 
 ## Reporting a vulnerability
 

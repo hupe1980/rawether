@@ -67,16 +67,20 @@ sock.send_at(&frame, launch.as_nanos() as u64)?;
 `etf` drops a frame whose launch time is already past, or that arrives too late to make it. With `report_errors`, the kernel queues a notice for each, and `tx_errors()` drains them:
 
 ```rust
-let missed = sock.tx_errors()?;
-if missed > 0 {
-    eprintln!("{missed} frames missed their launch time");
+let errors = sock.tx_errors()?;
+if errors.total() > 0 {
+    eprintln!("{} missed their launch time, {} had invalid parameters", errors.missed, errors.invalid);
 }
 ```
 
-The count covers the notices since the last call. Check it periodically: a growing number means the schedule is too tight for the `delta`, or the sender is falling behind.
+The counts cover the notices since the last call, and only launch-time notices are counted. Check it periodically: a growing number means the schedule is too tight for the `delta`, or the sender is falling behind.
+
+## Without `etf`
+
+Without a qdisc that honours launch times, the kernel ignores the launch time and the frame leaves at once (measured on the veth suite). `fq` also honours it, as a pacing time.
 
 ## Things that break launch times
 
 - **`qdisc_bypass(true)`.** It skips the qdisc that holds the frames.
-- **A priority that maps to a queue without `etf`.** The frame is then sent at once or dropped, depending on the qdisc.
-- **A clock mismatch** between `TxTime::clock` and the qdisc's `clockid`. The kernel drops every frame.
+- **A priority that maps to a queue without `etf`.** The frame is then sent at once.
+- **A clock mismatch** between `TxTime::clock` and the qdisc's `clockid`. The kernel drops every frame and counts it as `invalid`.

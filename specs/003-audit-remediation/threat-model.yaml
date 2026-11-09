@@ -1,0 +1,985 @@
+otmVersion: 0.2.0
+project:
+  id: 003-audit-remediation
+  name: Audit remediation — correct on every platform, harmless to the host
+threatspec:
+  actors:
+  - id: actor.caller
+    name: The application using rawether
+    trust: trusted
+  - id: actor.host-program
+    name: Another program on the host sharing the NIC (for example ptp4l)
+    trust: trusted
+  - id: actor.kernel
+    name: The kernel and its drivers, writing ring metadata, BPF records and control messages
+    trust: privileged
+  - id: actor.segment-peer
+    name: Any device or attacker able to put frames on the link, or to take the link down
+    trust: untrusted
+  dispositions:
+  - disposition: not-applicable
+    reason: 'no authentication surface: no credentials are handled; the raw-socket privilege is modelled under broken-access-control'
+    technique: credential-theft
+  - disposition: no-threat-detected
+    reason: 'checked the changed paths (BSD parser, capability drop, timestamp config, error queue): none relies
+      on a sender''s identity; frame authenticity stays out of scope (THREAT_MODEL.md)'
+    technique: identity-spoofing
+  - disposition: not-applicable
+    reason: 'no persistent-store surface: nothing is written to disk'
+    technique: data-tampering-at-rest
+  - disposition: not-applicable
+    reason: 'no audit-relevant surface: a socket library keeps no audit log'
+    technique: missing-audit-trail
+  - disposition: not-applicable
+    reason: 'no shared-tenant surface: one socket belongs to one process'
+    technique: cross-tenant-leak
+  - disposition: not-applicable
+    reason: 'no persistent-store surface: configuration is a value built in code'
+    technique: privilege-escalation-via-config
+  - disposition: no-threat-detected
+    reason: 'checked the changed read paths: the BSD parser and control-message reads only shorten or skip data;
+      they disclose nothing new; over-reads are modelled as tampering of process memory'
+    technique: sensitive-data-exposure
+  exclusions:
+  - entity: Effective timestamping
+    reason: reported state, part of asset.accounting; its correctness is threat.nic-timestamp-config-clobbered's
+      requirement SR-003
+  - entity: Hardware timestamp configuration
+    reason: modelled as component.nic and asset.host-time-sync
+  - entity: BPF record layout
+    reason: a property of component.bsd-parser, modelled through threat.bpf-record-misparse
+  - entity: Launch-time error counts
+    reason: an output of component.linux-backend, modelled through threat.tx-errors-miscounted
+  extends: .specify/memory/threat-model.yaml
+  generated: '2026-11-09T11:48:24Z'
+  profiles:
+  - stride
+  sources:
+  - path: plan.md
+    sha256: 6b8a97c3d0142cb2dc6fcbc567110ae8b49bcbe92b8d1b94913c2966ca251d60
+  - path: spec.md
+    sha256: 6d46be197ee3af463672270199cc02a2f5fd299864ab233a35e0103cbba08669
+  surfaces:
+  - external-input
+  - network-boundary
+  - authorization
+  version: '0.1'
+trustZones:
+- id: tz.host
+  name: Host-wide state shared with other programs (NIC configuration)
+  risk:
+    trustRating: 7
+- id: tz.kernel
+  name: The kernel and its shared ring
+  risk:
+    trustRating: 9
+- id: tz.link
+  name: The Ethernet segment (unauthenticated)
+  risk:
+    trustRating: 1
+- id: tz.process
+  name: The caller's process
+  risk:
+    trustRating: 8
+assets:
+- id: asset.accounting
+  name: 'Counters and configuration the caller relies on: stats, tx_errors, the receive path and timestamping in
+    effect'
+  risk:
+    availability: 20
+    confidentiality: 0
+    integrity: 70
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-5
+    classification: internal
+- id: asset.host-time-sync
+  name: The NIC's hardware timestamping configuration that other programs (ptp4l) rely on for clock synchronisation
+  risk:
+    availability: 85
+    confidentiality: 0
+    integrity: 85
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-3
+    classification: internal
+- id: asset.process-memory
+  name: Memory safety of the caller's process
+  risk:
+    availability: 80
+    confidentiality: 80
+    integrity: 95
+  attributes:
+    type: business-data
+    source: THREAT_MODEL.md#Assets
+    classification: internal
+- id: asset.raw-capability
+  name: The raw-socket capability (CAP_NET_RAW, CAP_NET_ADMIN) held by any thread of the process
+  risk:
+    availability: 30
+    confidentiality: 60
+    integrity: 85
+  attributes:
+    type: credential
+    source: spec.md#User-Story-2
+    classification: restricted
+- id: asset.receive-availability
+  name: 'The caller''s receive loop: delivering frames without stalling, spinning or crashing'
+  risk:
+    availability: 85
+    confidentiality: 0
+    integrity: 40
+  attributes:
+    type: business-data
+    source: spec.md#User-Story-4
+    classification: internal
+components:
+- id: component.bpf
+  name: Classic-BPF validator and interpreter
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-010
+- id: component.bsd-backend
+  name: BPF device backend (unsafe FFI)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-002
+- id: component.bsd-parser
+  name: BPF read-buffer record parser
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-001
+- id: component.capability-drop
+  name: drop_capabilities
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-004
+- id: component.config
+  name: Config validation (timeouts, ring geometry)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-009
+- id: component.hwtstamp-config
+  name: Hardware timestamp configuration decision
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-005
+- id: component.linux-backend
+  name: AF_PACKET backend (unsafe FFI, mmap, control messages, error queue)
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-011
+- id: component.nic
+  name: The NIC's device-wide timestamp configuration
+  type: datastore
+  parent:
+    trustZone: tz.host
+  attributes:
+    source: spec.md#User-Story-3
+- id: component.ring-walker
+  name: TPACKET_V3 ring walker and VLAN re-insertion
+  type: library
+  parent:
+    trustZone: tz.process
+  attributes:
+    source: spec.md#FR-012
+dataflows:
+- id: flow.bpf-read-buffer
+  name: The BSD kernel writes records into the read buffer
+  source: actor.kernel
+  destination: component.bsd-parser
+  assets:
+  - asset.process-memory
+  - asset.receive-availability
+  attributes:
+    crosses:
+    - tz.kernel
+    - tz.process
+- id: flow.control-messages
+  name: The Linux kernel writes control messages (auxdata, timestamps, error queue)
+  source: actor.kernel
+  destination: component.linux-backend
+  assets:
+  - asset.process-memory
+  - asset.accounting
+  attributes:
+    crosses:
+    - tz.kernel
+    - tz.process
+- id: flow.hwtstamp-write
+  name: rawether writes the NIC's timestamp configuration
+  source: component.hwtstamp-config
+  destination: component.nic
+  assets:
+  - asset.host-time-sync
+  attributes:
+    crosses:
+    - tz.process
+    - tz.host
+- id: flow.link-state
+  name: The link goes down or the interface disappears
+  source: actor.segment-peer
+  destination: component.linux-backend
+  assets:
+  - asset.receive-availability
+  attributes:
+    crosses:
+    - tz.link
+    - tz.process
+- id: flow.ring-blocks
+  name: The kernel hands ring blocks to the walker
+  source: actor.kernel
+  destination: component.ring-walker
+  assets:
+  - asset.process-memory
+  attributes:
+    crosses:
+    - tz.kernel
+    - tz.process
+threats:
+- id: threat.bpf-record-misparse
+  name: The BSD record parser assumes one platform's header layout, so on FreeBSD it rejects every record the kernel
+    writes and the caller's receive never returns a frame
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-131
+  - CWE-20
+  risk:
+    impact: 70
+    likelihood: 90
+  attributes:
+    source: spec.md#User-Story-1
+    assets:
+    - asset.receive-availability
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.bsd-parser
+    - flow.bpf-read-buffer
+    profile: stride
+    severity: critical
+    technique: resource-exhaustion
+- id: threat.capability-kept-by-other-threads
+  name: Threads that existed before drop_capabilities keep CAP_NET_RAW, so a parser defect exploited in any thread
+    still reaches raw-network privilege through the shared address space
+  categories:
+  - Elevation of Privilege
+  cwes:
+  - CWE-250
+  - CWE-273
+  risk:
+    impact: 80
+    likelihood: 60
+  attributes:
+    source: spec.md#User-Story-2
+    assets:
+    - asset.raw-capability
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.capability-drop
+    profile: stride
+    severity: high
+    technique: broken-access-control
+- id: threat.control-message-overread
+  name: A control message shorter than the structure read from it, or a truncated control buffer, makes the backend
+    read past the message into its own state
+  categories:
+  - Tampering
+  cwes:
+  - CWE-125
+  risk:
+    impact: 90
+    likelihood: 10
+  attributes:
+    source: spec.md#User-Story-6
+    assets:
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.linux-backend
+    - flow.control-messages
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.nic-timestamp-config-clobbered
+  name: Opening a socket with hardware timestamps overwrites the NIC's device-wide configuration, turning off the
+    transmit stamps ptp4l needs and degrading the host's time synchronisation
+  categories:
+  - Tampering
+  - Denial of Service
+  cwes:
+  - CWE-1188
+  - CWE-664
+  risk:
+    impact: 80
+    likelihood: 70
+  attributes:
+    source: spec.md#User-Story-3
+    assets:
+    - asset.host-time-sync
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.hwtstamp-config
+    - component.nic
+    - flow.hwtstamp-write
+    profile: stride
+    severity: critical
+    technique: data-tampering-in-transit
+- id: threat.numeric-limits-panic
+  name: A caller passes Duration::MAX as a timeout, a huge ring geometry or a far BPF jump, and rawether panics
+    or wraps instead of refusing
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-190
+  - CWE-248
+  risk:
+    impact: 50
+    likelihood: 40
+  attributes:
+    source: spec.md#User-Story-4
+    assets:
+    - asset.receive-availability
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.config
+    - component.bpf
+    - component.linux-backend
+    profile: stride
+    severity: medium
+    technique: resource-exhaustion
+- id: threat.own-frames-on-freebsd
+  name: On FreeBSD a socket configured not to see its own transmissions receives them anyway, so a responder can
+    answer itself in a loop
+  categories:
+  - Tampering
+  - Denial of Service
+  cwes:
+  - CWE-670
+  risk:
+    impact: 40
+    likelihood: 60
+  attributes:
+    source: spec.md#User-Story-1
+    assets:
+    - asset.receive-availability
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.bsd-backend
+    profile: stride
+    severity: medium
+    technique: data-tampering-in-transit
+- id: threat.recv-spins-on-socket-error
+  name: When the link goes down or the interface is removed, a ring receive sees the descriptor as ready forever
+    and spins a CPU core instead of returning, until its deadline or never
+  categories:
+  - Denial of Service
+  cwes:
+  - CWE-835
+  - CWE-400
+  risk:
+    impact: 70
+    likelihood: 60
+  attributes:
+    source: spec.md#User-Story-4
+    assets:
+    - asset.receive-availability
+    status: mitigated
+    actor: actor.segment-peer
+    disposition: threat
+    elements:
+    - component.linux-backend
+    - flow.link-state
+    profile: stride
+    severity: high
+    technique: resource-exhaustion
+- id: threat.ring-mutable-alias
+  name: A mutable slice over a whole ring block, descriptor included, asserts exclusive access to memory the kernel
+    still reads, which the compiler may exploit
+  categories:
+  - Tampering
+  cwes:
+  - CWE-758
+  risk:
+    impact: 80
+    likelihood: 10
+  attributes:
+    source: spec.md#User-Story-6
+    assets:
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.ring-walker
+    - flow.ring-blocks
+    profile: stride
+    severity: medium
+    technique: injection
+- id: threat.silent-downgrade
+  name: An explicitly requested ring that the kernel refuses becomes the plain path without an error, so the caller
+    runs with a configuration it did not ask for
+  categories:
+  - Tampering
+  cwes:
+  - CWE-636
+  risk:
+    impact: 40
+    likelihood: 40
+  attributes:
+    source: spec.md#User-Story-4
+    assets:
+    - asset.accounting
+    status: mitigated
+    actor: actor.caller
+    disposition: threat
+    elements:
+    - component.linux-backend
+    profile: stride
+    severity: medium
+    technique: data-tampering-in-transit
+- id: threat.sockaddr-provenance
+  name: The BSD hardware-address lookup reads past the reference it derived its pointer from, undefined behaviour
+    under the language's aliasing model
+  categories:
+  - Tampering
+  cwes:
+  - CWE-758
+  risk:
+    impact: 60
+    likelihood: 10
+  attributes:
+    source: spec.md#User-Story-1
+    assets:
+    - asset.process-memory
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.bsd-backend
+    profile: stride
+    severity: low
+    technique: injection
+- id: threat.stats-misreport
+  name: On BSD stats().received counts frames before the filter, so a caller sizing buffers or detecting loss reads
+    a number that means something else than on Linux
+  categories:
+  - Tampering
+  cwes:
+  - CWE-684
+  risk:
+    impact: 30
+    likelihood: 60
+  attributes:
+    source: spec.md#User-Story-5
+    assets:
+    - asset.accounting
+    status: mitigated
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.bsd-backend
+    profile: stride
+    severity: low
+    technique: data-tampering-in-transit
+- id: threat.tx-errors-miscounted
+  name: tx_errors counts every error-queue message, so the caller cannot tell launch-time drops from other reports,
+    nor why a frame was dropped
+  categories:
+  - Repudiation
+  cwes:
+  - CWE-684
+  risk:
+    impact: 40
+    likelihood: 40
+  attributes:
+    source: spec.md#User-Story-5
+    assets:
+    - asset.accounting
+    status: open
+    actor: actor.kernel
+    disposition: threat
+    elements:
+    - component.linux-backend
+    - flow.control-messages
+    profile: stride
+    severity: medium
+    technique: injection
+mitigations:
+- id: mitigation.checked-arithmetic
+  name: checked_add for deadlines (overflow = no deadline), checked_mul and limits for ring geometry, checked_add
+    for BPF jumps
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.numeric-limits-panic
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-008
+    touchpoints:
+    - src/sys/mod.rs
+    - src/config.rs
+    - src/bpf.rs
+- id: mitigation.checked-control-messages
+  name: Skip control messages when MSG_CTRUNC is set or cmsg_len is shorter than the payload read
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.control-message-overread
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-005
+    touchpoints:
+    - src/sys/linux.rs
+- id: mitigation.counted-deliveries
+  name: On BSD count delivered records for stats().received; bs_drop for dropped
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.stats-misreport
+    status: verified
+    kind: detective
+    requirements:
+    - SR-012
+    touchpoints:
+    - src/sys/bsd.rs
+- id: mitigation.explicit-ring-errors
+  name: An explicit RxMode::Ring that fails to set up fails the open; Auto falls back and reports it
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.silent-downgrade
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-009
+    touchpoints:
+    - src/sys/linux.rs
+- id: mitigation.freebsd-direction
+  name: Set BIOCSDIRECTION to BPF_D_IN on FreeBSD unless see_outgoing
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.own-frames-on-freebsd
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-010
+    touchpoints:
+    - src/sys/bsd.rs
+- id: mitigation.layout-aware-record-parse
+  name: Parse BPF records field by field with per-platform offsets from the libc struct and the kernel's SIZEOF_BPF_HDR
+    minimum
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.bpf-record-misparse
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-001
+    touchpoints:
+    - src/bpf_record.rs
+    - src/sys/bsd.rs
+    - fuzz/fuzz_targets/bpf_record.rs
+- id: mitigation.narrow-ring-borrows
+  name: The walker reads a shared slice; only the frame range VLAN re-insertion writes is borrowed mutably
+  riskReduction: 80
+  attributes:
+    threats:
+    - threat.ring-mutable-alias
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-006
+    touchpoints:
+    - src/ring.rs
+    - src/vlan.rs
+    - src/sys/linux.rs
+- id: mitigation.parsed-error-queue
+  name: Parse sock_extended_err and count only SO_EE_ORIGIN_TXTIME, by code
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.tx-errors-miscounted
+    status: required
+    kind: detective
+    requirements:
+    - SR-011
+    touchpoints:
+    - src/sys/linux.rs
+    - src/lib.rs
+- id: mitigation.process-wide-capability-check
+  name: Clear all capability sets of the calling thread, drop the bounding set where allowed, require no_new_privs,
+    then refuse when any other thread still holds a capability
+  riskReduction: 85
+  attributes:
+    threats:
+    - threat.capability-kept-by-other-threads
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-002
+    touchpoints:
+    - src/sys/linux.rs
+    - tests/drop_capabilities.rs
+- id: mitigation.raw-pointer-provenance
+  name: Derive the link-layer address pointer from the raw ifa_addr pointer and offset_of!
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.sockaddr-provenance
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-007
+    touchpoints:
+    - src/sys/bsd.rs
+- id: mitigation.read-first-never-lower
+  name: Read the NIC's timestamp configuration first; never write one that could not be read; keep tx_type; widen
+    the RX filter only from none
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.nic-timestamp-config-clobbered
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-003
+    touchpoints:
+    - src/hwtstamp.rs
+    - src/sys/linux.rs
+- id: mitigation.socket-error-surfaces
+  name: On POLLERR/POLLHUP read SO_ERROR and return it from recv, on both receive paths
+  riskReduction: 90
+  attributes:
+    threats:
+    - threat.recv-spins-on-socket-error
+    status: verified
+    kind: preventive
+    requirements:
+    - SR-004
+    touchpoints:
+    - src/sys/mod.rs
+    - src/sys/linux.rs
+    - tests/veth.rs
+requirements:
+- id: SR-001
+  statement: The BSD record parser MUST accept both macOS (minimum header 18) and FreeBSD (minimum header 26) layouts,
+    read header fields only inside the buffer, and stop without panicking at a malformed or truncated record.
+  priority: P1
+  mitigations:
+  - mitigation.layout-aware-record-parse
+  acceptance:
+  - given: a FreeBSD-layout buffer with three records
+    then: three frames are returned with their lengths and timestamps
+    when: it is parsed
+  - given: a record with hdrlen below the minimum, or a header cut off at the buffer end
+    then: parsing stops and nothing panics or reads outside the buffer
+    when: it is parsed
+  - given: random buffers
+    then: no panic and every frame lies inside the buffer
+    when: they are parsed with each layout
+  tasks: []
+- id: SR-002
+  statement: drop_capabilities MUST leave no thread of the process with an effective, permitted, inheritable or
+    ambient capability and MUST set no_new_privs, or return an error naming the threads that still hold capabilities.
+  priority: P1
+  mitigations:
+  - mitigation.process-wide-capability-check
+  acceptance:
+  - given: a single-threaded process with CAP_NET_RAW and an open socket
+    then: every /proc/self/task/*/status shows zero CapEff, CapPrm, CapInh and CapAmb, NoNewPrivs is 1, and the
+      socket still sends and receives
+    when: drop_capabilities returns Ok
+  - given: a second thread holding capabilities
+    then: it returns an error naming one thread
+    when: drop_capabilities runs
+  tasks: []
+- id: SR-003
+  statement: With hardware timestamps requested, rawether MUST NOT write a NIC timestamp configuration it could
+    not read, MUST NOT lower tx_type or narrow the RX filter, and MUST widen the RX filter only from none.
+  priority: P1
+  mitigations:
+  - mitigation.read-first-never-lower
+  acceptance:
+  - given: every combination of current tx_type and rx_filter, and whether configuring is allowed
+    then: the written configuration (if any) keeps tx_type and changes rx_filter only from NONE to ALL
+    when: the decision runs
+  - given: a NIC whose configuration cannot be read
+    then: no configuration is written and the socket reports software timestamps
+    when: a hardware-timestamping socket opens
+  tasks: []
+- id: SR-004
+  statement: A receive on either Linux path MUST return the socket's pending error instead of polling again when
+    the descriptor reports an error or hang-up.
+  priority: P1
+  mitigations:
+  - mitigation.socket-error-surfaces
+  acceptance:
+  - given: a socket waiting in recv with a 2 s timeout on the ring and on the plain path
+    then: recv returns an error within 100 ms
+    when: the link goes down or the interface is deleted
+  - given: the link back up
+    then: the socket receives it again
+    when: a frame is sent
+  tasks: []
+- id: SR-005
+  statement: Control messages MUST be read only when MSG_CTRUNC is clear and cmsg_len covers the payload read.
+  priority: P2
+  mitigations:
+  - mitigation.checked-control-messages
+  acceptance:
+  - given: a control buffer with a message whose cmsg_len is shorter than the payload type
+    then: the message is skipped
+    when: it is parsed
+  - given: msg_flags with MSG_CTRUNC
+    then: none is read
+    when: the messages are parsed
+  tasks: []
+- id: SR-006
+  statement: The ring walker MUST read blocks through a shared slice and borrow mutably only the octets VLAN re-insertion
+    writes.
+  priority: P2
+  mitigations:
+  - mitigation.narrow-ring-borrows
+  acceptance:
+  - given: the ring module
+    then: the walker takes &[u8], re-insertion takes a &mut range of the frame only, and Miri reports nothing
+    when: its signatures are reviewed and its tests run under Miri
+  tasks: []
+- id: SR-007
+  statement: The BSD hardware-address lookup MUST derive its read pointer from the raw ifa_addr pointer, never from
+    a reference to sockaddr_dl.
+  priority: P3
+  mitigations:
+  - mitigation.raw-pointer-provenance
+  acceptance:
+  - given: the lookup code
+    then: no &sockaddr_dl is formed and the offset comes from offset_of!; the macOS test still opens lo0
+    when: it is reviewed
+  tasks: []
+- id: SR-008
+  statement: No timeout, ring geometry or BPF program MUST cause a panic or a wrapped value, on 64-bit and 32-bit
+    targets.
+  priority: P2
+  mitigations:
+  - mitigation.checked-arithmetic
+  acceptance:
+  - given: recv with Duration::MAX
+    then: it returns without panicking
+    when: it runs on a non-blocking socket
+  - given: a ring geometry whose total size overflows u32 or usize, or a block count above the limit
+    then: InvalidInput
+    when: it is validated
+  - given: a BPF ja with k = u32::MAX
+    then: it is refused, and run returns 0
+    when: Program::new and Program::run run
+  tasks: []
+- id: SR-009
+  statement: An explicit RxMode::Ring that cannot be set up MUST fail the open with the kernel's reason; RxMode::Auto
+    MUST fall back and report RxPath::Plain.
+  priority: P2
+  mitigations:
+  - mitigation.explicit-ring-errors
+  acceptance:
+  - given: RxMode::Ring with a block size that is not a page multiple
+    then: it fails with InvalidInput
+    when: the socket opens
+  tasks: []
+- id: SR-010
+  statement: On FreeBSD a socket without see_outgoing MUST set BIOCSDIRECTION to BPF_D_IN.
+  priority: P2
+  mitigations:
+  - mitigation.freebsd-direction
+  acceptance:
+  - given: the FreeBSD backend
+    then: BIOCSDIRECTION(BPF_D_IN) is issued and checked (FreeBSD CI build; review)
+    when: a socket opens without see_outgoing
+  tasks: []
+- id: SR-011
+  statement: tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters
+    separately.
+  priority: P2
+  mitigations:
+  - mitigation.parsed-error-queue
+  acceptance:
+  - given: sock_extended_err records of origin TXTIME code MISSED, code INVALID_PARAM, and origin LOCAL
+    then: one missed, one invalid, the LOCAL one ignored
+    when: they are classified
+  - given: a frame with a past launch time through etf on veth
+    then: missed >= 1
+    when: tx_errors is read
+  tasks: []
+- id: SR-012
+  statement: stats().received MUST count only frames that passed the filter, on every backend.
+  priority: P3
+  mitigations:
+  - mitigation.counted-deliveries
+  acceptance:
+  - given: a BSD socket with a filter
+    then: received equals the frames delivered (review of the counter; macOS loopback test where privileged)
+    when: frames are read and stats() is read
+  tasks: []
+verification:
+- id: verification.sr-001.2026-11-09
+  requirement: SR-001
+  method: test
+  evidence: src/bpf_record.rs::tests::records_of_both_layouts_are_read; src/bpf_record.rs::tests::malformed_records_end_the_buffer;
+    src/bpf_record.rs::tests::random_buffers_never_escape; fuzz target bpf_record
+  result: pass
+  verdict: verified
+  justification: Three FreeBSD (hdrlen 26) and three macOS (hdrlen 18) records are read back; hdrlen below the minimum,
+    caplen past the buffer and every header cut end the parse; a final record shorter than the padded struct is
+    read; 50 000 random buffers with both layouts stay inside; Miri clean; fuzzed 20 s locally without a finding.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-002.2026-11-09
+  requirement: SR-002
+  method: test
+  evidence: tests/drop_capabilities.rs (run by scripts/veth-test.sh, Docker, 2026-11-09); src/sys/linux.rs::tests::a_thread_status_shows_whether_it_holds_capabilities
+  result: pass
+  verdict: verified
+  justification: With a second thread the call returns "1 other thread(s) still hold capabilities"; alone it succeeds,
+    every /proc/self/task/*/status shows zero CapInh/CapPrm/CapEff/CapAmb and NoNewPrivs 1, CapBnd lacks bits 12
+    and 13 (root in Docker held CAP_SETPCAP), the socket still sends and receives, and a new socket is refused naming
+    CAP_NET_RAW.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-003.2026-11-09
+  requirement: SR-003
+  method: test
+  evidence: src/hwtstamp.rs::tests::the_nic_configuration_is_never_lowered; tests/veth.rs::hardware_timestamps_on_a_nic_without_them_report_software
+  result: pass
+  verdict: verified
+  justification: Exhaustive over flags x tx_type 0..=3 x rx_filter 0..=15 - a write keeps flags and tx_type and
+    only changes NONE to ALL; an unreadable configuration gives Software and no write (decide(None)); on veth (no
+    hwtstamp ioctl) the socket reports Software. The linux backend writes only on Plan::Widen (review of hardware_timestamps).
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-004.2026-11-09
+  requirement: SR-004
+  method: test
+  evidence: tests/veth.rs::a_link_going_down_ends_a_receive_and_frames_return_after_it_comes_up; tests/veth.rs::deleting_the_interface_ends_a_receive
+  result: pass
+  verdict: verified
+  justification: On ring and plain paths (Docker, 2026-11-09) a recv with a 5 s timeout returns an error naming
+    the interface within 1 s of link down or deletion; after link up a frame is received; after deletion a later
+    recv does not spin.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-005.2026-11-09
+  requirement: SR-005
+  method: test
+  evidence: src/sys/linux.rs::tests::a_short_control_message_is_skipped
+  result: pass
+  verdict: verified
+  justification: A cmsg whose cmsg_len is shorter than [timespec; 3] is skipped and a full-length one read (Linux
+    unit tests in Docker); MSG_CTRUNC causes every message to be ignored in plain_next and drain_error_queue (review,
+    src/sys/linux.rs).
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-006.2026-11-09
+  requirement: SR-006
+  method: review
+  evidence: src/sys/linux.rs (Ring::block returns &[u8]; Ring::frame_mut borrows only start-4..start+len; ring_next);
+    Miri on ring and vlan tests
+  result: pass
+  verdict: verified
+  justification: The walker reads through Ring::block (shared); VLAN re-insertion gets a &mut over the frame and
+    its head-room only; Miri reports no UB on the pure ring/vlan modules.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-007.2026-11-09
+  requirement: SR-007
+  method: review
+  evidence: src/sys/bsd.rs hardware_address
+  result: pass
+  verdict: verified
+  justification: The MAC is copied with ptr::copy_nonoverlapping from ifa_addr.cast::<u8>() + offset_of!(sockaddr_dl,
+    sdl_data) + sdl_nlen, bounded by sdl_len; no &sockaddr_dl spans the read; the macOS lo0 test still opens.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-008.2026-11-09
+  requirement: SR-008
+  method: test
+  evidence: src/sys/mod.rs::tests::waits_never_overflow_and_round_up; src/config.rs::tests::a_configuration_is_checked_before_any_system_call;
+    src/bpf.rs::tests::a_far_jump_is_refused_on_every_pointer_width; tests/veth.rs::a_huge_timeout_waits_and_an_impossible_ring_is_refused
+  result: pass
+  verdict: verified
+  justification: Duration::MAX gives no deadline and recv returns; overflowing ring geometries are InvalidInput;
+    a ja with k = u32::MAX is refused and run uses checked_add; clippy passes on i686.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-009.2026-11-09
+  requirement: SR-009
+  method: test
+  evidence: tests/veth.rs::a_huge_timeout_waits_and_an_impossible_ring_is_refused
+  result: pass
+  verdict: verified
+  justification: RxMode::Ring with a 2 KiB block (not a page multiple) fails open with InvalidInput on both runs;
+    Auto keeps its fallback (review of open).
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-010.2026-11-09
+  requirement: SR-010
+  method: review
+  evidence: src/sys/bsd.rs open (BIOCSDIRECTION, BPF_D_IN); src/sys/bsd.rs::tests::locally_defined_ioctls_match_the_headers
+  result: pass
+  verdict: verified
+  justification: On FreeBSD without see_outgoing, BIOCSDIRECTION (0x80044277 = _IOW('B', 119, u_int), checked against
+    FreeBSD's bpf.h) is issued with BPF_D_IN and its error returned; builds with clippy for x86_64-unknown-freebsd.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-011.2026-11-09
+  requirement: SR-011
+  method: test
+  evidence: src/sys/linux.rs::tests::only_launch_time_reports_are_counted
+  result: inconclusive
+  verdict: implemented-unverified
+  justification: Classification by origin and code is unit-tested; the veth assertion missed >= 1 runs only where
+    the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run.
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+- id: verification.sr-012.2026-11-09
+  requirement: SR-012
+  method: review
+  evidence: src/sys/bsd.rs (recv increments delivered; stats returns delivered and bs_drop); src/packet.rs Stats
+    rustdoc
+  result: pass
+  verdict: verified
+  justification: received counts records handed out by recv, all of which passed the in-kernel filter; dropped is
+    bs_drop; the rustdoc states the meaning and what is excluded. bd_rcount being pre-filter was read in FreeBSD
+    and xnu bpf.c (research R9).
+  verified_at: '2026-11-09T12:15:36Z'
+  commit: 724140a
+decisions: []

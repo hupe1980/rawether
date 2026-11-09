@@ -10,7 +10,7 @@ group = "Platforms"
 On macOS and FreeBSD, a rawether socket is a **BPF device** (`/dev/bpf` or `/dev/bpf0`, `/dev/bpf1`, …) attached to one interface. BPF is the facility `tcpdump` and Wireshark use. It reads and writes whole Ethernet frames and runs classic-BPF filters in the kernel, so the same `bpf::Program` works on both systems and on Linux.
 
 > [!NOTE]
-> CI runs the unit tests on macOS, including opening a BPF device. FreeBSD is not yet built or tested in CI.
+> CI runs the unit tests on macOS (including opening a BPF device) and on FreeBSD 14 in a VM.
 
 ## Access
 
@@ -27,7 +27,7 @@ Without access, `open` fails with `PermissionDenied`. If every BPF device is bus
 1. Open the cloning `/dev/bpf`, or the first free numbered device.
 2. Set the buffer size (`Config::buffer_size`, 4 KiB to 2 MiB), then attach the interface (`BIOCSETIF`).
 3. Turn on immediate mode (`BIOCIMMEDIATE`), so frames are delivered as they arrive rather than when the buffer fills. Set `BIOCSHDRCMPLT`, so the source address you write is sent unchanged.
-4. On macOS, unless `see_outgoing` is set, stop seeing the host's own transmissions (`BIOCSSEESENT`).
+4. Unless `see_outgoing` is set, stop seeing the host's own transmissions (`BIOCSSEESENT` on macOS, `BIOCSDIRECTION` on FreeBSD).
 5. Install the filter (`BIOCSETF`), which also discards anything buffered before it.
 6. Promiscuous mode if requested (`BIOCPROMISC`), and multicast memberships.
 
@@ -39,11 +39,11 @@ Without access, `open` fails with `PermissionDenied`. If every BPF device is bus
 | Timestamps | Software only, from the BPF header, with microsecond resolution |
 | All-multicast | Not a separate mode: `all_multicast(true)` turns on promiscuous mode |
 | Multicast groups | BPF has no membership call. rawether keeps a datagram socket that holds the memberships for as long as the socket is open |
-| Own transmissions | Hidden on macOS unless `see_outgoing(true)`. Always delivered on FreeBSD |
+| Own transmissions | Hidden unless `see_outgoing(true)` |
 | VLAN tags | Delivered in place; nothing to restore |
 | Batched send | One `write` per frame |
 | Launch time | Not available: `tx_time` makes `open` fail with `Unsupported` |
 | Priority, qdisc bypass | Ignored: these tune Linux's queueing and have no BPF equivalent |
 | `tx_errors()` | Always 0 |
 | `drop_capabilities()` | Does nothing. The open descriptor already holds the access |
-| Drop counters | `BIOCGSTATS` |
+| Counters | `received` counts frames rawether read from the device; `dropped` comes from `BIOCGSTATS` |

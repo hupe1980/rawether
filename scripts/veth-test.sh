@@ -22,9 +22,11 @@ run "$mode" ip link set rawether0 up
 run "$mode" ip link set rawether1 up
 trap 'run "$mode" ip link del rawether0 2>/dev/null || true' EXIT
 
-bin=$(cargo test --test veth --no-run --message-format=json 2>/dev/null \
-    | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
-[[ -n "$bin" ]] || { echo "could not build tests/veth.rs" >&2; exit 1; }
+built() { cargo test --test "$1" --no-run --message-format=json 2>/dev/null \
+    | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1; }
+bin=$(built veth)
+caps=$(built drop_capabilities)
+[[ -n "$bin" && -n "$caps" ]] || { echo "could not build the kernel tests" >&2; exit 1; }
 
 export RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1
 for rx in ring plain; do
@@ -33,3 +35,6 @@ for rx in ring plain; do
     run "$mode" env RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1 RAWETHER_RX="$rx" RAWETHER_ALLOC_ALONE=1 \
         "$bin" --exact the_steady_state_does_not_allocate
 done
+# A program of its own: dropping capabilities is process-wide and cannot be undone.
+echo "==> capability drop"
+run "$mode" env RAWETHER_TEST_IFACE=rawether0 RAWETHER_TEST_PEER=rawether1 "$caps"

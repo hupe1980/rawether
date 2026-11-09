@@ -25,6 +25,8 @@ lint:
     cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
     cargo clippy --all-targets --target aarch64-apple-darwin -- -D warnings
     cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+    cargo clippy --all-targets --target x86_64-unknown-freebsd -- -D warnings
+    cargo clippy --all-targets --target i686-unknown-linux-gnu -- -D warnings
 
 test:
     @echo "==> gate: test"
@@ -35,6 +37,7 @@ doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --target aarch64-unknown-linux-gnu
     test -f target/aarch64-unknown-linux-gnu/doc/rawether/threat_model/index.html
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --target x86_64-unknown-freebsd
 
 deny:
     @echo "==> gate: deny"
@@ -55,6 +58,14 @@ package:
 site:
     @echo "==> gate: site"
     cd site && zola check && zola build
+
+# The pure modules under Miri (system calls are skipped).
+miri:
+    cargo +nightly miri test --lib
+
+# Every fuzz target for `secs` seconds (cargo-fuzz, nightly).
+fuzz secs="60":
+    cd fuzz && for t in $(cargo +nightly fuzz list); do cargo +nightly fuzz run "$t" -- -max_total_time={{secs}}; done
 
 # The kernel suite on a veth pair, natively (Linux, sudo) or in Docker.
 veth:

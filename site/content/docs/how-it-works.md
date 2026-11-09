@@ -19,7 +19,7 @@ On Linux, `Socket::open` follows an order chosen so that no frame slips past the
 
 1. **Create the socket with protocol 0.** An AF_PACKET socket with protocol 0 receives nothing until it is bound.
 2. **Attach the filter.** The EtherType set is compiled to classic BPF and attached with `SO_ATTACH_FILTER`.
-3. **Set up the ring.** `PACKET_VERSION` TPACKET_V3, head-room for VLAN tags, `PACKET_RX_RING`, then `mmap`. If the kernel refuses, the socket uses the plain path.
+3. **Set up the ring.** `PACKET_VERSION` TPACKET_V3, head-room for VLAN tags, `PACKET_RX_RING`, then `mmap`. If the kernel refuses, `RxMode::Auto` uses the plain path; an explicit `RxMode::Ring` fails.
 4. **Bind to the interface.** Only now do frames start arriving, all of them already filtered.
 5. **Join groups and modes.** Multicast membership, all-multicast and promiscuous mode, if requested.
 6. **Socket options.** Timestamping, `SO_PRIORITY`, qdisc bypass, `SO_TXTIME`, non-blocking mode.
@@ -67,6 +67,7 @@ Every fallible call returns `std::io::Result`. The error kinds you can act on ar
 | `NotFound` | No interface by that name, or no free BPF device |
 | `PermissionDenied` | Missing `CAP_NET_RAW` or `/dev/bpf*` access; the message says which |
 | `InvalidInput` | A configuration or frame that cannot work: a bad name, a unicast "group", an impossible ring geometry, a frame shorter than 14 octets, `send_at` without `tx_time` |
+| `NetworkDown` and others | The link went down or the interface disappeared while you waited; the message names the interface |
 | `Unsupported` | A feature the platform lacks, such as launch time on macOS, or any socket on Windows |
 
 A configuration is checked before any system call, so a mistake costs nothing and leaves nothing half-open.
