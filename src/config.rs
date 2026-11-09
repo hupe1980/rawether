@@ -26,7 +26,9 @@ pub struct RingConfig {
     pub block_size: u32,
     /// Blocks in the ring.
     pub block_count: u32,
-    /// The largest frame slot, in octets; frames beyond it are truncated by the kernel.
+    /// The frame slot size the kernel is told about, in octets. TPACKET_V3 packs frames into a
+    /// block by their own length, so this does not cap a frame; a frame is captured short only
+    /// when the filter returns a smaller snap length or the frame exceeds a block.
     pub frame_size: u32,
     /// How long the kernel waits before handing over a block that is not full, in milliseconds.
     /// This bounds the latency the ring adds when traffic is light.

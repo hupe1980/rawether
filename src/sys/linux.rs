@@ -432,9 +432,8 @@ impl Inner {
             if !self.see_outgoing && sll.sll_pkttype == libc::PACKET_OUTGOING {
                 continue;
             }
-            let original_len = n as usize;
-            let captured = original_len.min(room);
-            let (mut vlan_tag, mut timestamp) = (None, None);
+            let captured = (n as usize).min(room);
+            let (mut vlan_tag, mut timestamp, mut wire_len) = (None, None, None);
             // SAFETY: the kernel filled `ctrl` and set `msg_controllen`; the CMSG_* helpers walk
             // only inside it, and each payload is read unaligned into a value of its own type.
             unsafe {
@@ -444,6 +443,9 @@ impl Inner {
                     if (*c).cmsg_level == libc::SOL_PACKET && (*c).cmsg_type == libc::PACKET_AUXDATA {
                         let aux: libc::tpacket_auxdata =
                             data.cast::<libc::tpacket_auxdata>().read_unaligned();
+                        // The length on the wire: a filter's snap length trims the frame before
+                        // `recvmsg` sees it, so MSG_TRUNC alone would report the trimmed size.
+                        wire_len = Some(aux.tp_len as usize);
                         if aux.tp_status & libc::TP_STATUS_VLAN_VALID != 0 {
                             let tpid = if aux.tp_status & libc::TP_STATUS_VLAN_TPID_VALID != 0
                                 && aux.tp_vlan_tpid != 0
@@ -462,6 +464,7 @@ impl Inner {
                     c = libc::CMSG_NXTHDR(&raw const msg, c);
                 }
             }
+            let original_len = wire_len.unwrap_or(n as usize).max(captured);
             if self.timestamping == Timestamping::Off {
                 timestamp = None;
             } else if timestamp.is_none() {

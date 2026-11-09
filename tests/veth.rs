@@ -161,6 +161,27 @@ fn a_hundred_thousand_frames_are_received_or_counted_as_dropped() {
     assert_eq!(stats.received, got);
 }
 
+/// SR-003: a filter that keeps fewer octets than the frame has marks the frame truncated, and the
+/// wire length is still the frame's own — on the ring and on the plain path.
+#[test]
+fn a_short_snap_length_marks_the_frame_truncated_with_its_wire_length() {
+    use rawether::bpf::{Insn, Program, op};
+    let Some((iface, peer)) = pair() else { return };
+    let keep_20 = Program::new(vec![
+        Insn::new(op::LD | op::H | op::ABS, 0, 0, 12),
+        Insn::new(op::JMP | op::JEQ | op::K, 0, 1, u32::from(TYPE_A)),
+        Insn::new(op::RET | op::K, 0, 0, 20),
+        Insn::new(op::RET | op::K, 0, 0, 0),
+    ])
+    .unwrap();
+    let mut r = Config::new(&peer).filter(rawether::Filter::Bpf(keep_20)).rx_mode(rx_mode()).open().unwrap();
+    let t = tx(&iface);
+    t.send(&frame(r.mac_address(), t.mac_address(), TYPE_A, None, 1)).unwrap();
+    let p = r.recv(Some(Duration::from_secs(2))).unwrap().expect("the frame");
+    assert_eq!((p.data().len(), p.original_len()), (20, 60));
+    assert!(p.is_truncated());
+}
+
 /// SR-008: sparse traffic is kept too. At a low rate the kernel retires a block per frame, so
 /// the ring must have enough blocks to hold frames that arrive while the reader is busy.
 #[test]

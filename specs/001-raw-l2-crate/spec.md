@@ -77,8 +77,10 @@ readable in `poll(2)` when a frame arrives; a user BPF program filters as writte
 
 ### Edge Cases
 
-- A frame longer than a ring slot is truncated by the kernel: `Packet::original_len()` reports
-  the wire length and `data().len()` the captured length.
+- A frame captured short — a filter returning a smaller snap length, or a frame larger than a
+  ring block — is truncated: `Packet::original_len()` reports the wire length and
+  `data().len()` the captured length, on the ring and on the plain path alike. (TPACKET_V3 does
+  not cut frames at its slot size; that was measured on 2026-11-09 and corrected here.)
 - Multicast membership on an interface that is down or missing: an error naming the interface.
 - An interface name that does not exist: `NotFound` naming it.
 - The ring is full: the kernel drops; `stats()` counts it.
