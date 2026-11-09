@@ -37,6 +37,8 @@ All notable changes to rawether are listed here. The format follows
 - Joining a multicast group on FreeBSD failed with `EINVAL`: the request is now a link-layer
   address (`AF_LINK`). On macOS, where joining needs root, the error says so and names
   `promiscuous(true)` as the alternative.
+- macOS and FreeBSD: closing a socket left its multicast groups joined on the interface. The
+  socket now leaves them when dropped.
 
 ## [0.1.0] - 2026-11-09
 

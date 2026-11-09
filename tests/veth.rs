@@ -571,12 +571,15 @@ fn ids_stay_exact_after_a_refused_send_and_reports_coexist() {
         let refused = s.next_tx_id();
         assert!(s.send_at(&f, now.checked_sub(Duration::from_secs(1)).unwrap().as_nanos() as u64).is_err());
         assert_eq!(s.next_tx_id(), refused, "a refused frame uses no identifier");
+        // Launch times far enough ahead that a loaded runner does not miss them (a missed one
+        // is dropped by etf and has no timestamp).
+        let now = rawether::clock_now(rawether::Clock::Tai).unwrap();
         let mut announced = Vec::new();
         for k in 0..10u64 {
             announced.push(s.next_tx_id());
-            s.send_at(&f, (now + Duration::from_millis(5 + k)).as_nanos() as u64).unwrap();
+            s.send_at(&f, (now + Duration::from_millis(50 + k)).as_nanos() as u64).unwrap();
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
         let read_stamps = |s: &mut Socket| {
             let mut ids: Vec<u32> =
                 std::iter::from_fn(|| s.tx_timestamp(Some(Duration::from_secs(1))).unwrap())
@@ -593,7 +596,7 @@ fn ids_stay_exact_after_a_refused_send_and_reports_coexist() {
             let errors = s.tx_errors().unwrap();
             (read_stamps(&mut s), errors)
         };
-        assert_eq!(ids, announced, "timestamps first: {timestamps_first}");
+        assert_eq!(ids, announced, "timestamps first: {timestamps_first}, {errors:?}");
         assert_eq!((errors.invalid, errors.missed), (1, 0), "timestamps first: {timestamps_first}");
     }
 }
