@@ -1,22 +1,20 @@
 ## Security Convergence — 003-audit-remediation
 
-Commit `724140a` · 2026-11-09T12:15:36Z
+Commit `9692423` · 2026-11-09T12:33:51Z
 
 | Metric | Value |
 |---|---|
 | Threats (active) | 12 |
 | Open blocking threats | 0  |
 | Security requirements | 12 |
-| verified | 11 |
-| implemented, unverified | 1 SR-011 |
+| verified | 12 |
+| implemented, unverified | 0  |
 | partial | 0  |
 | missing | 0  |
 | Expired decisions | 0  |
 | Source drift | none |
 
-**Status: NOT CONVERGED**
-
-Appended tasks: T039
+**Status: CONVERGED**
 
 | Requirement | Verdict | Method | Evidence | Justification |
 |---|---|---|---|---|
@@ -30,5 +28,5 @@ Appended tasks: T039
 | SR-008 | verified | test | `src/sys/mod.rs::tests::waits_never_overflow_and_round_up; src/config.rs::tests::a_configuration_is_checked_before_any_system_call; src/bpf.rs::tests::a_far_jump_is_refused_on_every_pointer_width; tests/veth.rs::a_huge_timeout_waits_and_an_impossible_ring_is_refused` | Duration::MAX gives no deadline and recv returns; overflowing ring geometries are InvalidInput; a ja with k = u32::MAX is refused and run uses checked_add; clippy passes on i686. |
 | SR-009 | verified | test | `tests/veth.rs::a_huge_timeout_waits_and_an_impossible_ring_is_refused` | RxMode::Ring with a 2 KiB block (not a page multiple) fails open with InvalidInput on both runs; Auto keeps its fallback (review of open). |
 | SR-010 | verified | review | `src/sys/bsd.rs open (BIOCSDIRECTION, BPF_D_IN); src/sys/bsd.rs::tests::locally_defined_ioctls_match_the_headers` | On FreeBSD without see_outgoing, BIOCSDIRECTION (0x80044277 = _IOW('B', 119, u_int), checked against FreeBSD's bpf.h) is issued with BPF_D_IN and its error returned; builds with clippy for x86_64-unknown-freebsd. |
-| SR-011 | implemented-unverified | test | `src/sys/linux.rs::tests::only_launch_time_reports_are_counted` | Classification by origin and code is unit-tested; the veth assertion missed >= 1 runs only where the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run. |
+| SR-011 | verified | test | `tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, both receive paths, commit 9692423); src/sys/linux.rs::tests::only_launch_time_reports_are_counted` | On a kernel with etf, a past launch time makes send_at fail naming the launch time and tx_errors report invalid = 1, missed = 0, then 0 after draining; a future launch time leaves after >= 40 ms; classification ignores non-TXTIME origins (unit test). |
 | SR-012 | verified | review | `src/sys/bsd.rs (recv increments delivered; stats returns delivered and bs_drop); src/packet.rs Stats rustdoc` | received counts records handed out by recv, all of which passed the in-kernel filter; dropped is bs_drop; the rustdoc states the meaning and what is excluded. bd_rcount being pre-filter was read in FreeBSD and xnu bpf.c (research R9). |

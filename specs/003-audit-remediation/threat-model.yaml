@@ -523,7 +523,7 @@ threats:
     source: spec.md#User-Story-5
     assets:
     - asset.accounting
-    status: open
+    status: mitigated
     actor: actor.kernel
     disposition: threat
     elements:
@@ -540,7 +540,7 @@ mitigations:
   attributes:
     threats:
     - threat.numeric-limits-panic
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-008
@@ -554,7 +554,7 @@ mitigations:
   attributes:
     threats:
     - threat.control-message-overread
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-005
@@ -566,7 +566,7 @@ mitigations:
   attributes:
     threats:
     - threat.stats-misreport
-    status: required
+    status: verified
     kind: detective
     requirements:
     - SR-012
@@ -578,7 +578,7 @@ mitigations:
   attributes:
     threats:
     - threat.silent-downgrade
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-009
@@ -590,7 +590,7 @@ mitigations:
   attributes:
     threats:
     - threat.own-frames-on-freebsd
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-010
@@ -603,7 +603,7 @@ mitigations:
   attributes:
     threats:
     - threat.bpf-record-misparse
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-001
@@ -617,7 +617,7 @@ mitigations:
   attributes:
     threats:
     - threat.ring-mutable-alias
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-006
@@ -631,7 +631,7 @@ mitigations:
   attributes:
     threats:
     - threat.tx-errors-miscounted
-    status: required
+    status: verified
     kind: detective
     requirements:
     - SR-011
@@ -645,7 +645,7 @@ mitigations:
   attributes:
     threats:
     - threat.capability-kept-by-other-threads
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-002
@@ -658,7 +658,7 @@ mitigations:
   attributes:
     threats:
     - threat.sockaddr-provenance
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-007
@@ -671,7 +671,7 @@ mitigations:
   attributes:
     threats:
     - threat.nic-timestamp-config-clobbered
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-003
@@ -684,7 +684,7 @@ mitigations:
   attributes:
     threats:
     - threat.recv-spins-on-socket-error
-    status: required
+    status: verified
     kind: preventive
     requirements:
     - SR-004
@@ -971,6 +971,18 @@ verification:
     the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run.
   verified_at: '2026-11-09T12:15:36Z'
   commit: 724140a
+- id: verification.sr-011.2026-11-09-2
+  requirement: SR-011
+  method: test
+  evidence: tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283,
+    ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, both receive paths, commit 9692423); src/sys/linux.rs::tests::only_launch_time_reports_are_counted
+  result: pass
+  verdict: verified
+  justification: On a kernel with etf, a past launch time makes send_at fail naming the launch time and tx_errors
+    report invalid = 1, missed = 0, then 0 after draining; a future launch time leaves after >= 40 ms; classification
+    ignores non-TXTIME origins (unit test).
+  verified_at: '2026-11-09T12:33:51Z'
+  commit: '9692423'
 - id: verification.sr-012.2026-11-09
   requirement: SR-012
   method: review

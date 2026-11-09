@@ -92,4 +92,4 @@ US6 and the documents. `cargo test` stays green after each task.
 
 **Purpose**: Close security gaps found by ThreatSpec converge on 2026-11-09 (commit 724140a).
 
-- [ ] T039 [SR-011] Add a test for SR-011 (tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters separately) — touchpoints: src/lib.rs, src/sys/linux.rs [converge: implemented-unverified; Classification by origin and code is unit-tested; the veth assertion missed >= 1 runs only where the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run.]
+- [X] T039 [SR-011] Add a test for SR-011 (tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters separately) — touchpoints: src/lib.rs, src/sys/linux.rs [converge: implemented-unverified; Classification by origin and code is unit-tested; the veth assertion missed >= 1 runs only where the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run.]

@@ -105,7 +105,7 @@ flowchart LR
 | `threat.own-frames-on-freebsd` | On FreeBSD a socket configured not to see its own transmissions receives them anyway, so a responder can answer itself in a loop | Tampering, Denial of Service | data-tampering-in-transit | **medium** | mitigated | `mitigation.freebsd-direction` |  | spec.md#User-Story-1 |
 | `threat.ring-mutable-alias` | A mutable slice over a whole ring block, descriptor included, asserts exclusive access to memory the kernel still reads, which the compiler may exploit | Tampering | injection | **medium** | mitigated | `mitigation.narrow-ring-borrows` |  | spec.md#User-Story-6 |
 | `threat.silent-downgrade` | An explicitly requested ring that the kernel refuses becomes the plain path without an error, so the caller runs with a configuration it did not ask for | Tampering | data-tampering-in-transit | **medium** | mitigated | `mitigation.explicit-ring-errors` |  | spec.md#User-Story-4 |
-| `threat.tx-errors-miscounted` | tx_errors counts every error-queue message, so the caller cannot tell launch-time drops from other reports, nor why a frame was dropped | Repudiation | injection | **medium** | open | `mitigation.parsed-error-queue` |  | spec.md#User-Story-5 |
+| `threat.tx-errors-miscounted` | tx_errors counts every error-queue message, so the caller cannot tell launch-time drops from other reports, nor why a frame was dropped | Repudiation | injection | **medium** | mitigated | `mitigation.parsed-error-queue` |  | spec.md#User-Story-5 |
 | `threat.sockaddr-provenance` | The BSD hardware-address lookup reads past the reference it derived its pointer from, undefined behaviour under the language's aliasing model | Tampering | injection | **low** | mitigated | `mitigation.raw-pointer-provenance` |  | spec.md#User-Story-1 |
 | `threat.stats-misreport` | On BSD stats().received counts frames before the filter, so a caller sizing buffers or detecting loss reads a number that means something else than on Linux | Tampering | data-tampering-in-transit | **low** | mitigated | `mitigation.counted-deliveries` |  | spec.md#User-Story-5 |
 
@@ -125,18 +125,18 @@ flowchart LR
 
 | ID | Mitigation | Kind | Threats | Requirements | Touchpoints | Status |
 |---|---|---|---|---|---|---|
-| `mitigation.checked-arithmetic` | checked_add for deadlines (overflow = no deadline), checked_mul and limits for ring geometry, checked_add for BPF jumps | preventive | `threat.numeric-limits-panic` | SR-008 | `src/sys/mod.rs`, `src/config.rs`, `src/bpf.rs` | required |
-| `mitigation.checked-control-messages` | Skip control messages when MSG_CTRUNC is set or cmsg_len is shorter than the payload read | preventive | `threat.control-message-overread` | SR-005 | `src/sys/linux.rs` | required |
-| `mitigation.counted-deliveries` | On BSD count delivered records for stats().received; bs_drop for dropped | detective | `threat.stats-misreport` | SR-012 | `src/sys/bsd.rs` | required |
-| `mitigation.explicit-ring-errors` | An explicit RxMode::Ring that fails to set up fails the open; Auto falls back and reports it | preventive | `threat.silent-downgrade` | SR-009 | `src/sys/linux.rs` | required |
-| `mitigation.freebsd-direction` | Set BIOCSDIRECTION to BPF_D_IN on FreeBSD unless see_outgoing | preventive | `threat.own-frames-on-freebsd` | SR-010 | `src/sys/bsd.rs` | required |
-| `mitigation.layout-aware-record-parse` | Parse BPF records field by field with per-platform offsets from the libc struct and the kernel's SIZEOF_BPF_HDR minimum | preventive | `threat.bpf-record-misparse` | SR-001 | `src/bpf_record.rs`, `src/sys/bsd.rs`, `fuzz/fuzz_targets/bpf_record.rs` | required |
-| `mitigation.narrow-ring-borrows` | The walker reads a shared slice; only the frame range VLAN re-insertion writes is borrowed mutably | preventive | `threat.ring-mutable-alias` | SR-006 | `src/ring.rs`, `src/vlan.rs`, `src/sys/linux.rs` | required |
-| `mitigation.parsed-error-queue` | Parse sock_extended_err and count only SO_EE_ORIGIN_TXTIME, by code | detective | `threat.tx-errors-miscounted` | SR-011 | `src/sys/linux.rs`, `src/lib.rs` | required |
-| `mitigation.process-wide-capability-check` | Clear all capability sets of the calling thread, drop the bounding set where allowed, require no_new_privs, then refuse when any other thread still holds a capability | preventive | `threat.capability-kept-by-other-threads` | SR-002 | `src/sys/linux.rs`, `tests/drop_capabilities.rs` | required |
-| `mitigation.raw-pointer-provenance` | Derive the link-layer address pointer from the raw ifa_addr pointer and offset_of! | preventive | `threat.sockaddr-provenance` | SR-007 | `src/sys/bsd.rs` | required |
-| `mitigation.read-first-never-lower` | Read the NIC's timestamp configuration first; never write one that could not be read; keep tx_type; widen the RX filter only from none | preventive | `threat.nic-timestamp-config-clobbered` | SR-003 | `src/hwtstamp.rs`, `src/sys/linux.rs` | required |
-| `mitigation.socket-error-surfaces` | On POLLERR/POLLHUP read SO_ERROR and return it from recv, on both receive paths | preventive | `threat.recv-spins-on-socket-error` | SR-004 | `src/sys/mod.rs`, `src/sys/linux.rs`, `tests/veth.rs` | required |
+| `mitigation.checked-arithmetic` | checked_add for deadlines (overflow = no deadline), checked_mul and limits for ring geometry, checked_add for BPF jumps | preventive | `threat.numeric-limits-panic` | SR-008 | `src/sys/mod.rs`, `src/config.rs`, `src/bpf.rs` | verified |
+| `mitigation.checked-control-messages` | Skip control messages when MSG_CTRUNC is set or cmsg_len is shorter than the payload read | preventive | `threat.control-message-overread` | SR-005 | `src/sys/linux.rs` | verified |
+| `mitigation.counted-deliveries` | On BSD count delivered records for stats().received; bs_drop for dropped | detective | `threat.stats-misreport` | SR-012 | `src/sys/bsd.rs` | verified |
+| `mitigation.explicit-ring-errors` | An explicit RxMode::Ring that fails to set up fails the open; Auto falls back and reports it | preventive | `threat.silent-downgrade` | SR-009 | `src/sys/linux.rs` | verified |
+| `mitigation.freebsd-direction` | Set BIOCSDIRECTION to BPF_D_IN on FreeBSD unless see_outgoing | preventive | `threat.own-frames-on-freebsd` | SR-010 | `src/sys/bsd.rs` | verified |
+| `mitigation.layout-aware-record-parse` | Parse BPF records field by field with per-platform offsets from the libc struct and the kernel's SIZEOF_BPF_HDR minimum | preventive | `threat.bpf-record-misparse` | SR-001 | `src/bpf_record.rs`, `src/sys/bsd.rs`, `fuzz/fuzz_targets/bpf_record.rs` | verified |
+| `mitigation.narrow-ring-borrows` | The walker reads a shared slice; only the frame range VLAN re-insertion writes is borrowed mutably | preventive | `threat.ring-mutable-alias` | SR-006 | `src/ring.rs`, `src/vlan.rs`, `src/sys/linux.rs` | verified |
+| `mitigation.parsed-error-queue` | Parse sock_extended_err and count only SO_EE_ORIGIN_TXTIME, by code | detective | `threat.tx-errors-miscounted` | SR-011 | `src/sys/linux.rs`, `src/lib.rs` | verified |
+| `mitigation.process-wide-capability-check` | Clear all capability sets of the calling thread, drop the bounding set where allowed, require no_new_privs, then refuse when any other thread still holds a capability | preventive | `threat.capability-kept-by-other-threads` | SR-002 | `src/sys/linux.rs`, `tests/drop_capabilities.rs` | verified |
+| `mitigation.raw-pointer-provenance` | Derive the link-layer address pointer from the raw ifa_addr pointer and offset_of! | preventive | `threat.sockaddr-provenance` | SR-007 | `src/sys/bsd.rs` | verified |
+| `mitigation.read-first-never-lower` | Read the NIC's timestamp configuration first; never write one that could not be read; keep tx_type; widen the RX filter only from none | preventive | `threat.nic-timestamp-config-clobbered` | SR-003 | `src/hwtstamp.rs`, `src/sys/linux.rs` | verified |
+| `mitigation.socket-error-surfaces` | On POLLERR/POLLHUP read SO_ERROR and return it from recv, on both receive paths | preventive | `threat.recv-spins-on-socket-error` | SR-004 | `src/sys/mod.rs`, `src/sys/linux.rs`, `tests/veth.rs` | verified |
 
 ## Security Requirements
 
@@ -238,7 +238,7 @@ On FreeBSD a socket without see_outgoing MUST set BIOCSDIRECTION to BPF_D_IN.
 - Tasks: T007 ✓
 - Verification `verification.sr-010.2026-11-09`: review → pass (verified) — `src/sys/bsd.rs open (BIOCSDIRECTION, BPF_D_IN); src/sys/bsd.rs::tests::locally_defined_ioctls_match_the_headers`
 
-### SR-011 (P2) — has-evidence
+### SR-011 (P2) — verified
 
 tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlines and invalid parameters separately.
 
@@ -247,6 +247,7 @@ tx_errors MUST count only SO_EE_ORIGIN_TXTIME messages and report missed deadlin
 - Mitigations: `mitigation.parsed-error-queue`
 - Tasks: T023 ✓, T024 ✓, T039
 - Verification `verification.sr-011.2026-11-09`: test → inconclusive (implemented-unverified) — `src/sys/linux.rs::tests::only_launch_time_reports_are_counted`
+- Verification `verification.sr-011.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, both receive paths, commit 9692423); src/sys/linux.rs::tests::only_launch_time_reports_are_counted`
 
 ### SR-012 (P3) — verified
 

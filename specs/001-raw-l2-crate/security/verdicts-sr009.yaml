@@ -1,0 +1,7 @@
+verdicts:
+  - requirement: SR-009
+    verdict: verified
+    method: test
+    evidence: tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, commit 9692423)
+    result: pass
+    justification: Without tx_time, send_at returns InvalidInput; with tx_time and etf a frame leaves at its launch time, and a refused launch time fails the send and is counted by tx_errors (record 003 refined the counts by reason). The etf half can no longer skip in CI.

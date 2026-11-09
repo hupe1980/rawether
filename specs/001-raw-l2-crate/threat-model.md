@@ -211,7 +211,7 @@ stats() MUST report kernel drops so that received plus dropped equals what passe
 - Verification `verification.sr-008.2026-11-09-2`: test → pass (verified) — `tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped`
 - Verification `verification.sr-008.2026-11-09-3`: test → pass (verified) — `tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped`
 
-### SR-009 (P2) — has-evidence
+### SR-009 (P2) — verified
 
 send_at MUST fail with InvalidInput unless Config::tx_time was set, and tx_errors() MUST count frames the kernel reported dropped.
 
@@ -222,6 +222,7 @@ send_at MUST fail with InvalidInput unless Config::tx_time was set, and tx_error
 - Verification `verification.sr-009.2026-11-09`: review → inconclusive (implemented-unverified) — `src/sys/linux.rs:send_at`
 - Verification `verification.sr-009.2026-11-09-2`: review → inconclusive (implemented-unverified) — `src/sys/linux.rs:send_at`
 - Verification `verification.sr-009.2026-11-09-3`: review → inconclusive (implemented-unverified) — `src/sys/linux.rs:send_at`
+- Verification `verification.sr-009.2026-11-09-4`: test → pass (verified) — `tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, commit 9692423)`
 
 ## Risk Decisions
 

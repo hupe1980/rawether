@@ -1,8 +1,8 @@
 {
   "feature": "003-audit-remediation",
-  "commit": "724140a",
-  "timestamp": "2026-11-09T12:15:36Z",
-  "status": "NOT CONVERGED",
+  "commit": "9692423",
+  "timestamp": "2026-11-09T12:33:51Z",
+  "status": "CONVERGED",
   "threats": {
     "total": 12,
     "open_blocking": []
@@ -20,21 +20,24 @@
       "SR-008",
       "SR-009",
       "SR-010",
+      "SR-011",
       "SR-012"
     ],
-    "implemented_unverified": [
-      "SR-011"
-    ],
+    "implemented_unverified": [],
     "partial": [],
     "missing": []
   },
   "expired_decisions": [],
   "drift": [],
-  "appended_tasks": [
-    "T039"
-  ],
+  "appended_tasks": [],
   "already_open_tasks_for": [],
   "verdicts": {
+    "SR-011": {
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, both receive paths, commit 9692423); src/sys/linux.rs::tests::only_launch_time_reports_are_counted",
+      "justification": "On a kernel with etf, a past launch time makes send_at fail naming the launch time and tx_errors report invalid = 1, missed = 0, then 0 after draining; a future launch time leaves after >= 40 ms; classification ignores non-TXTIME origins (unit test)."
+    },
     "SR-001": {
       "verdict": "verified",
       "method": "test",
@@ -94,12 +97,6 @@
       "method": "review",
       "evidence": "src/sys/bsd.rs open (BIOCSDIRECTION, BPF_D_IN); src/sys/bsd.rs::tests::locally_defined_ioctls_match_the_headers",
       "justification": "On FreeBSD without see_outgoing, BIOCSDIRECTION (0x80044277 = _IOW('B', 119, u_int), checked against FreeBSD's bpf.h) is issued with BPF_D_IN and its error returned; builds with clippy for x86_64-unknown-freebsd."
-    },
-    "SR-011": {
-      "verdict": "implemented-unverified",
-      "method": "test",
-      "evidence": "src/sys/linux.rs::tests::only_launch_time_reports_are_counted",
-      "justification": "Classification by origin and code is unit-tested; the veth assertion missed >= 1 runs only where the kernel has sch_etf (GitHub's ubuntu-24.04), not in Docker Desktop. Verify with the CI run."
     },
     "SR-012": {
       "verdict": "verified",

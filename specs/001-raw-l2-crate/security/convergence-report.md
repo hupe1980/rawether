@@ -1,20 +1,20 @@
 ## Security Convergence — 001-raw-l2-crate
 
-Commit `307f8e8` · 2026-11-09T10:49:21Z
+Commit `9692423` · 2026-11-09T12:33:58Z
 
 | Metric | Value |
 |---|---|
 | Threats (active) | 9 |
 | Open blocking threats | 0  |
 | Security requirements | 9 |
-| verified | 8 |
-| implemented, unverified | 1 SR-009 |
+| verified | 9 |
+| implemented, unverified | 0  |
 | partial | 0  |
 | missing | 0  |
 | Expired decisions | 0  |
 | Source drift | none |
 
-**Status: NOT CONVERGED**
+**Status: CONVERGED**
 
 | Requirement | Verdict | Method | Evidence | Justification |
 |---|---|---|---|---|
@@ -26,4 +26,4 @@ Commit `307f8e8` · 2026-11-09T10:49:21Z
 | SR-006 | verified | test | `tests/veth.rs::every_descriptor_is_close_on_exec` | F_GETFD on an open Linux socket has FD_CLOEXEC; the BSD backend opens /dev/bpf with O_CLOEXEC and sets FD_CLOEXEC on its membership socket (src/sys/bsd.rs open_device, join_groups) — reviewed, not run on BSD. |
 | SR-007 | verified | test | `src/lib.rs::tests::the_default_configuration_is_neither_promiscuous_nor_all_multicast` | Config::new leaves both flags false; the backends enable them only from those flags. |
 | SR-008 | verified | test | `tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped` | 100000 frames sent in batches; received plus stats().dropped equals 100000 and stats().received equals the frames seen, on both receive paths. Sparse traffic is kept: 50 frames 3 ms apart all wait in the ring while the reader is busy (sparse_frames_wait_in_the_ring_while_the_reader_is_busy). |
-| SR-009 | implemented-unverified | review | `src/sys/linux.rs:send_at` | Scenario 1 passed (send_at without tx_time is InvalidInput, tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it). Scenario 2 (etf drops a past launch time and tx_errors counts it) is implemented and tested, but the test skipped: the local Docker kernel has no sch_etf. It runs in the ubuntu-24.04 CI lane. |
+| SR-009 | verified | test | `tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, commit 9692423)` | Without tx_time, send_at returns InvalidInput; with tx_time and etf a frame leaves at its launch time, and a refused launch time fails the send and is counted by tx_errors (record 003 refined the counts by reason). The etf half can no longer skip in CI. |

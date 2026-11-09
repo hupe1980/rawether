@@ -1,0 +1,7 @@
+verdicts:
+  - requirement: SR-011
+    verdict: verified
+    method: test
+    evidence: tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, both receive paths, commit 9692423); src/sys/linux.rs::tests::only_launch_time_reports_are_counted
+    result: pass
+    justification: On a kernel with etf, a past launch time makes send_at fail naming the launch time and tx_errors report invalid = 1, missed = 0, then 0 after draining; a future launch time leaves after >= 40 ms; classification ignores non-TXTIME origins (unit test).

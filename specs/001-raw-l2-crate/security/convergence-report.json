@@ -1,8 +1,8 @@
 {
   "feature": "001-raw-l2-crate",
-  "commit": "307f8e8",
-  "timestamp": "2026-11-09T10:49:21Z",
-  "status": "NOT CONVERGED",
+  "commit": "9692423",
+  "timestamp": "2026-11-09T12:33:58Z",
+  "status": "CONVERGED",
   "threats": {
     "total": 9,
     "open_blocking": []
@@ -17,21 +17,24 @@
       "SR-005",
       "SR-006",
       "SR-007",
-      "SR-008"
-    ],
-    "implemented_unverified": [
+      "SR-008",
       "SR-009"
     ],
+    "implemented_unverified": [],
     "partial": [],
     "missing": []
   },
   "expired_decisions": [],
   "drift": [],
   "appended_tasks": [],
-  "already_open_tasks_for": [
-    "SR-009"
-  ],
+  "already_open_tasks_for": [],
   "verdicts": {
+    "SR-009": {
+      "verdict": "verified",
+      "method": "test",
+      "evidence": "tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it (CI run https://github.com/hupe1980/rawether/actions/runs/42617140283, ubuntu-24.04 with sch_etf, RAWETHER_REQUIRE_ETF=1, commit 9692423)",
+      "justification": "Without tx_time, send_at returns InvalidInput; with tx_time and etf a frame leaves at its launch time, and a refused launch time fails the send and is counted by tx_errors (record 003 refined the counts by reason). The etf half can no longer skip in CI."
+    },
     "SR-001": {
       "verdict": "verified",
       "method": "test",
@@ -79,12 +82,6 @@
       "method": "test",
       "evidence": "tests/veth.rs::a_hundred_thousand_frames_are_received_or_counted_as_dropped",
       "justification": "100000 frames sent in batches; received plus stats().dropped equals 100000 and stats().received equals the frames seen, on both receive paths. Sparse traffic is kept: 50 frames 3 ms apart all wait in the ring while the reader is busy (sparse_frames_wait_in_the_ring_while_the_reader_is_busy)."
-    },
-    "SR-009": {
-      "verdict": "implemented-unverified",
-      "method": "review",
-      "evidence": "src/sys/linux.rs:send_at",
-      "justification": "Scenario 1 passed (send_at without tx_time is InvalidInput, tests/veth.rs::launch_time_needs_configuration_and_a_qdisc_that_honours_it). Scenario 2 (etf drops a past launch time and tx_errors counts it) is implemented and tested, but the test skipped: the local Docker kernel has no sch_etf. It runs in the ubuntu-24.04 CI lane."
     }
   }
 }
